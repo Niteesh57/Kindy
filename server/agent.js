@@ -77,7 +77,7 @@ function formatInputParts(input) {
         },
       },
       {
-        text: 'Listen to the audio above. Respond directly in English. Keep response to 1-2 short sentences with initial emotion and gesture tags.',
+        text: 'Listen to the audio above. Respond directly in English. Speak naturally in 2 to 4 engaging, conversational sentences that provide a complete, satisfying answer. Include stage tags for emotion and gestures.',
       },
     ];
   }
@@ -164,7 +164,7 @@ export async function streamAgentResponse(input, history = [], onChunk) {
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.7,
-      maxOutputTokens: 350,
+      maxOutputTokens: 450,
     },
   });
 

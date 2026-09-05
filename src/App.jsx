@@ -10,9 +10,13 @@ import {
   MicOff,
   Sparkles,
   Laptop,
+  Compass,
 } from 'lucide-react';
 import WavingHand from './components/WavingHand';
+import ExpressionFaceOverlay from './components/ExpressionFaceOverlay';
 import ExpressionPlayground from './components/ExpressionPlayground';
+import LaptopOverlay from './components/LaptopOverlay';
+import MapOverlay from './components/MapOverlay';
 import { parseExpressionText, mergeTags } from './utils/expressionParser';
 import hark from 'hark';
 import {
@@ -152,6 +156,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isTypingMode, setIsTypingMode] = useState(false);
+  const [isMapMode, setIsMapMode] = useState(true);
 
   // Expression & Speech State
   const [isTalking, setIsTalking] = useState(false);
@@ -162,6 +167,7 @@ export default function App() {
   const [activeHeadClass, setActiveHeadClass] = useState('');
   const [activeTags, setActiveTags] = useState(['calm']);
   const [activeEmotion, setActiveEmotion] = useState('calm');
+  const [mouthEnergy, setMouthEnergy] = useState(0);
   const [talkingFrame, setTalkingFrame] = useState(0);
   const [speechBubbleText, setSpeechBubbleText] = useState('');
   const [isGeminiLoading, setIsGeminiLoading] = useState(false);
@@ -196,9 +202,13 @@ export default function App() {
   const vadAnimationRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const harkInstanceRef = useRef(null);
+  // Real-time audio playback lip-sync analyser & animation frame
+  const playbackAnalyserRef = useRef(null);
+  const lipSyncRafRef = useRef(null);
   // Keep strong reference to playing audio to prevent garbage collection mid-playback!
   const audioElementRef = useRef(null);
   const audioSourceNodeRef = useRef(null);
+  const expressionTimersRef = useRef([]);
 
   // Keep refs in sync for speech callbacks
   useEffect(() => {
@@ -399,9 +409,9 @@ export default function App() {
           clearTimeout(silenceTimerRef.current);
         }
 
-        // Buffer time: wait 2.0 seconds of silence before finalizing and sending to LLM
+        // Buffer time: wait 900ms of silence before finalizing and sending to LLM (fast, responsive turn-taking)
         silenceTimerRef.current = setTimeout(() => {
-          console.log('[Hark VAD] 2-second silence buffer elapsed — finalizing and sending to LLM...');
+          console.log('[Hark VAD] Silence threshold reached — finalizing and sending to LLM...');
           isRecordingSpeechRef.current = false;
           isUserSpeakingRef.current = false;
           setIsUserSpeaking(false);
@@ -412,7 +422,7 @@ export default function App() {
               mediaRecorderRef.current.stop();
             } catch (e) {}
           }
-        }, 2000); // Exactly 2 seconds as requested by the user
+        }, 900); // 900ms natural conversational pause
       });
     } catch (err) {
       console.warn('Voice capture initialization error:', err);
@@ -836,6 +846,11 @@ export default function App() {
 
       const handlePlaybackEnded = () => {
         console.log('🔊 Speech playback ended. Resetting to rest state and re-enabling mic.');
+        if (lipSyncRafRef.current) {
+          cancelAnimationFrame(lipSyncRafRef.current);
+          lipSyncRafRef.current = null;
+        }
+        setMouthEnergy(0);
         audioElementRef.current = null;
         audioSourceNodeRef.current = null;
         setIsTalking(false);
@@ -851,7 +866,7 @@ export default function App() {
         setTimeout(() => {
           setSpeechBubbleText('');
           setUserSpeechText('');
-        }, 2500);
+        }, 6000);
 
         // Auto-resume microphone listening immediately after Kindy finishes speaking
         if (!isMutedRef.current && document.visibilityState !== 'hidden') {
@@ -860,7 +875,16 @@ export default function App() {
         }
       };
 
-      // Stop any existing playback
+      // Stop any existing playback and clear pending expression timers
+      if (lipSyncRafRef.current) {
+        cancelAnimationFrame(lipSyncRafRef.current);
+        lipSyncRafRef.current = null;
+      }
+      setMouthEnergy(0);
+      if (expressionTimersRef.current && expressionTimersRef.current.length > 0) {
+        expressionTimersRef.current.forEach((t) => clearTimeout(t));
+        expressionTimersRef.current = [];
+      }
       if (audioElementRef.current) {
         try { audioElementRef.current.pause(); } catch (e) {}
         audioElementRef.current = null;
@@ -869,6 +893,44 @@ export default function App() {
         try { audioSourceNodeRef.current.stop(); } catch (e) {}
         audioSourceNodeRef.current = null;
       }
+
+      // Helper function to schedule timed emotion transitions over the total audio duration
+      const scheduleSegmentTransitions = (totalDurationSec) => {
+        if (!segments || segments.length <= 1 || !totalDurationSec || totalDurationSec <= 0) return;
+
+        const totalCharCount = segments.reduce((sum, s) => sum + (s.cleanText?.length || 10), 0);
+        let elapsedFraction = 0;
+
+        // Skip index 0 because it starts immediately at time 0
+        for (let i = 1; i < segments.length; i++) {
+          const prevSeg = segments[i - 1];
+          const segFraction = (prevSeg.cleanText?.length || 10) / totalCharCount;
+          elapsedFraction += segFraction;
+          const triggerDelayMs = Math.round(elapsedFraction * totalDurationSec * 1000);
+
+          const targetSeg = segments[i];
+          const timer = setTimeout(() => {
+            const segTags = targetSeg.tags || ['happy'];
+            const segEmotion = segTags[0] || 'happy';
+            const segGesture = targetSeg.resolved?.gesture || 'hands_down';
+
+            setActiveTags(segTags);
+            setActiveEmotion(segEmotion);
+            setActiveGesture(segGesture);
+            if (targetSeg.resolved?.headClass) {
+              setActiveHeadClass(targetSeg.resolved.headClass);
+            }
+            setIsWaving(
+              segGesture.includes('wave') ||
+              segGesture.includes('cheer') ||
+              segGesture === 'say_hi' ||
+              segGesture === 'hands_up'
+            );
+          }, triggerDelayMs);
+
+          expressionTimersRef.current.push(timer);
+        }
+      };
 
       // 4. PRIMARY: Web Audio API (AudioContext)
       // Web Audio API is immune to autoplay policies once the AudioContext is resumed,
@@ -890,17 +952,54 @@ export default function App() {
           const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
           const source = audioCtx.createBufferSource();
           source.buffer = audioBuffer;
-          source.connect(audioCtx.destination);
+
+          // Create high-resolution AnalyserNode specifically for lip-sync viseme tracking
+          const playbackAnalyser = audioCtx.createAnalyser();
+          playbackAnalyser.fftSize = 256;
+          playbackAnalyser.smoothingTimeConstant = 0.4;
+          playbackAnalyserRef.current = playbackAnalyser;
+
+          source.connect(playbackAnalyser);
+          playbackAnalyser.connect(audioCtx.destination);
           audioSourceNodeRef.current = source; // Keep strong ref to prevent garbage collection
 
+          // Real-time audio energy lip-sync loop
+          const timeData = new Uint8Array(playbackAnalyser.frequencyBinCount);
+          const startLipSyncLoop = () => {
+            if (!isTalkingRef.current) return;
+            playbackAnalyser.getByteFrequencyData(timeData);
+
+            // Compute RMS vocal volume across speech frequencies (vowels & consonants)
+            let sum = 0;
+            const binCount = Math.min(timeData.length, 32); // Focus on fundamental vocal frequencies (80Hz - 3kHz)
+            for (let i = 0; i < binCount; i++) {
+              sum += timeData[i] * timeData[i];
+            }
+            const rms = Math.sqrt(sum / binCount);
+            // Normalize volume into 0.0 to 1.0 speech energy
+            const energy = Math.min(1, Math.max(0, (rms - 15) / 95));
+            setMouthEnergy(energy);
+
+            lipSyncRafRef.current = requestAnimationFrame(startLipSyncLoop);
+          };
+          lipSyncRafRef.current = requestAnimationFrame(startLipSyncLoop);
+
           source.onended = () => {
+            if (lipSyncRafRef.current) {
+              cancelAnimationFrame(lipSyncRafRef.current);
+              lipSyncRafRef.current = null;
+            }
+            setMouthEnergy(0);
             audioSourceNodeRef.current = null;
             handlePlaybackEnded();
           };
 
           source.start(0);
           playedViaWebAudio = true;
-          console.log(`🔊 Playing via Web Audio API (duration: ${audioBuffer.duration.toFixed(2)}s)`);
+          console.log(`🔊 Playing via Web Audio API with audio-driven lip sync (duration: ${audioBuffer.duration.toFixed(2)}s)`);
+
+          // Schedule multi-stage emotional shifts over speech duration
+          scheduleSegmentTransitions(audioBuffer.duration);
         }
       } catch (ctxErr) {
         console.warn('Web Audio API decode failed, falling back to HTML5 Audio:', ctxErr);
@@ -922,6 +1021,12 @@ export default function App() {
           console.error('HTML5 Audio playback error:', e);
           URL.revokeObjectURL(blobUrl);
           handlePlaybackEnded();
+        };
+
+        audioEl.onloadedmetadata = () => {
+          if (audioEl.duration && !isNaN(audioEl.duration)) {
+            scheduleSegmentTransitions(audioEl.duration);
+          }
         };
 
         try {
@@ -1228,9 +1333,9 @@ export default function App() {
           id="avatar-center-wrapper"
           className={`full-character-wrapper ${isBouncing ? 'bounce-active' : ''} ${
             isTalking ? 'talking-active' : ''
-          } ${activeHeadClass}`}
+          } ${activeHeadClass} ${isTypingMode || isMapMode ? 'head-typing-tilt' : ''}`}
         >
-          <div className="avatar-fullscreen-container">
+          <div className="avatar-fullscreen-container has-expression-active">
             {/* Base Avatar (clothes, body, hair, accessories) */}
             <Avatar
               id="main-react-nice-avatar"
@@ -1243,37 +1348,45 @@ export default function App() {
               {...config}
             />
 
-            {/* Symmetrical Two-Hand Waving & Gestures */}
-            <WavingHand
-              skinColor={config.faceColor}
-              shirtColor={config.shirtColor}
-              isWaving={isWaving}
-              gesture={isTypingMode ? 'typing' : activeGesture}
-              leftHand={isTypingMode ? 'typing' : leftHand}
-              rightHand={isTypingMode ? 'typing' : rightHand}
-              onWave={(side) => {
-                if (side === 'left') toggleLeftHand();
-                else if (side === 'right') toggleRightHand();
-                else setIsWaving(!isWaving);
-              }}
-              onToggleLeftHand={toggleLeftHand}
-              onToggleRightHand={toggleRightHand}
+            {/* Dynamic Expressive Face (animated brows, eyes, blush, and audio-reactive talking mouth) */}
+            <ExpressionFaceOverlay
+              expression={activeEmotion}
+              tags={activeTags}
+              isTalking={isTalking}
+              talkingFrame={talkingFrame}
+              mouthEnergy={mouthEnergy}
             />
 
-            {/* Laptop Overlay for Typing Mode */}
-            {isTypingMode && (
-              <div className="laptop-overlay-container">
-                <svg viewBox="0 0 200 140" className="laptop-svg">
-                  {/* Screen Back */}
-                  <path d="M 30 110 L 40 20 C 42 10, 50 5, 60 5 L 140 5 C 150 5, 158 10, 160 20 L 170 110 Z" fill="#e5e7eb" stroke="#d1d5db" strokeWidth="2" />
-                  {/* Glowing Logo */}
-                  <circle cx="100" cy="55" r="8" fill="#ffffff" className="laptop-glow" />
-                  {/* Base Front Edge */}
-                  <path d="M 10 130 C 10 135, 15 140, 20 140 L 180 140 C 185 140, 190 135, 190 130 L 175 110 L 25 110 Z" fill="#d1d5db" />
-                  <path d="M 10 130 C 10 135, 15 140, 20 140 L 180 140 C 185 140, 190 135, 190 130" fill="none" stroke="#9ca3af" strokeWidth="1" />
-                </svg>
-              </div>
+            {/* Symmetrical Two-Hand Waving & Gestures (hidden when holding map or laptop) */}
+            {!isTypingMode && !isMapMode && (
+              <WavingHand
+                skinColor={config.faceColor}
+                shirtColor={config.shirtColor}
+                isWaving={isWaving}
+                gesture={activeGesture}
+                leftHand={leftHand}
+                rightHand={rightHand}
+                onWave={(side) => {
+                  if (side === 'left') toggleLeftHand();
+                  else if (side === 'right') toggleRightHand();
+                  else setIsWaving(!isWaving);
+                }}
+                onToggleLeftHand={toggleLeftHand}
+                onToggleRightHand={toggleRightHand}
+              />
             )}
+
+            {/* Detective Map Overlay with Real Optical Magnifying Glass Scope */}
+            {isMapMode && (
+              <MapOverlay
+                skinColor={config.faceColor}
+                shirtColor={config.shirtColor}
+                isTalking={isTalking}
+              />
+            )}
+
+            {/* Laptop Overlay for Typing Mode (Straight, High-Tech Glyph Matrix Screen) */}
+            {isTypingMode && <LaptopOverlay isTalking={isTalking} />}
           </div>
         </div>
       </div>
@@ -1294,8 +1407,22 @@ export default function App() {
         onToggleMute={toggleMute}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
+        isMapMode={isMapMode}
+        onToggleMap={() => {
+          setIsMapMode((prev) => {
+            const next = !prev;
+            if (next) setIsTypingMode(false);
+            return next;
+          });
+        }}
         isTypingMode={isTypingMode}
-        onToggleTyping={() => setIsTypingMode(prev => !prev)}
+        onToggleTyping={() => {
+          setIsTypingMode((prev) => {
+            const next = !prev;
+            if (next) setIsMapMode(false);
+            return next;
+          });
+        }}
       />
     </div>
   );
@@ -1309,6 +1436,8 @@ const ControlsDock = memo(function ControlsDock({
   onToggleMute,
   isFullscreen,
   onToggleFullscreen,
+  isMapMode,
+  onToggleMap,
   isTypingMode,
   onToggleTyping,
 }) {
@@ -1348,16 +1477,28 @@ const ControlsDock = memo(function ControlsDock({
         <span className="dock-shortcut">M</span>
       </button>
 
-      {/* Typing Mode Button */}
+      {/* Google Map Mode Button */}
+      <button
+        type="button"
+        className={`dock-control-btn map-toggle-btn ${isMapMode ? 'active' : ''}`}
+        onClick={onToggleMap}
+        title="Toggle Google Maps Mode"
+        style={isMapMode ? { background: '#e6f4ea', color: '#137333', fontWeight: 'bold' } : {}}
+      >
+        <Compass size={19} className="dock-icon" />
+        <span>Google Maps</span>
+      </button>
+
+      {/* Search / Laptop Mode Button */}
       <button
         type="button"
         className={`dock-control-btn typing-toggle-btn ${isTypingMode ? 'active' : ''}`}
         onClick={onToggleTyping}
-        title="Toggle Typing Mode"
-        style={isTypingMode ? { background: '#e0e7ff', color: '#4f46e5' } : {}}
+        title="Toggle Search Laptop Mode"
+        style={isTypingMode ? { background: '#e8f0fe', color: '#1a73e8', fontWeight: 'bold' } : {}}
       >
         <Laptop size={19} className="dock-icon" />
-        <span>Typing</span>
+        <span>Search Mode</span>
       </button>
 
       {/* 4. Fullscreen Button */}

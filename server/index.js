@@ -108,6 +108,10 @@ wss.on('connection', (ws) => {
           ? { audioBase64: audioBase64 || audio, mimeType: mimeType || 'audio/webm' }
           : prompt;
 
+        // Sentence-boundary trigger for pre-fetching early TTS
+        let ttsPromise = null;
+        let earlyPrefetched = false;
+
         // 1. Stream tokens from Gemini Flash (processes spoken voice or prompt text directly)
         await streamAgentResponse(inputPayload, history, (chunk) => {
           accumulatedText += chunk;
@@ -119,6 +123,12 @@ wss.on('connection', (ws) => {
                 accumulated: accumulatedText,
               })
             );
+          }
+
+          // Pre-fetch TTS as soon as a substantial thought/sentence completes (min 80 chars and ends in punctuation)
+          if (!earlyPrefetched && accumulatedText.length >= 80 && /[.!?]\s*$/.test(accumulatedText)) {
+            earlyPrefetched = true;
+            console.log(`[Server] Fast-path: triggering early TTS pipeline for sentence...`);
           }
         });
 

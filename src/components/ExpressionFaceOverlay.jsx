@@ -19,6 +19,7 @@ export default function ExpressionFaceOverlay({
   tags = null,
   isTalking = false,
   talkingFrame = 0,
+  mouthEnergy = 0,
 }) {
   const rawList = tags || expression;
   const tagList = (Array.isArray(rawList) ? rawList : String(rawList || 'happy').split(/[,+\s]+/))
@@ -512,28 +513,53 @@ export default function ExpressionFaceOverlay({
            ========================================================= */}
         <g className="mouth-layer">
           {effectivelyTalking ? (
-            /* Animated Talking Mouth Cycle */
-            talkingFrame % 2 === 0 ? (
-              /* Wide open talking with teeth & pink tongue */
+            /* Audio-Driven Viseme Mouth: Scales & morphs smoothly with real speech energy */
+            mouthEnergy < 0.08 ? (
+              /* Silence / natural pause between words: mouth closes naturally in conversational resting position */
+              <path
+                d="M 256 322 C 264 324 280 324 288 322"
+                stroke="#171921"
+                strokeWidth="4"
+                strokeLinecap="round"
+              />
+            ) : mouthEnergy < 0.32 ? (
+              /* Gentle / Consonant speech (p, b, m, s, t): slight open parting */
               <g transform="translate(272, 322)">
                 <path
-                  d="M -22 -5 C -14 22 14 22 22 -5 C 14 -8 -14 -8 -22 -5 Z"
+                  d="M -16 -2 C -10 8 10 8 16 -2 C 10 -4 -10 -4 -16 -2 Z"
                   fill="#171921"
                   stroke="#171921"
-                  strokeWidth="3.5"
+                  strokeWidth="3"
+                  strokeLinejoin="round"
+                />
+                <line x1="-10" y1="-1" x2="10" y2="-1" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" />
+              </g>
+            ) : mouthEnergy < 0.65 ? (
+              /* Medium Vowel / Syllable pronunciation (e, i, o): open mouth with visible teeth and tongue */
+              <g transform="translate(272, 322)">
+                <path
+                  d="M -20 -4 C -12 16 12 16 20 -4 C 12 -6 -12 -6 -20 -4 Z"
+                  fill="#171921"
+                  stroke="#171921"
+                  strokeWidth="3.2"
+                  strokeLinejoin="round"
+                />
+                <path d="M -12 -3 C -6 -1 6 -1 12 -3 L 9 0 C 4 1 -4 1 -9 0 Z" fill="#ffffff" />
+                <ellipse cx="0" cy="7" rx="8" ry="4.5" fill="#f43f5e" />
+              </g>
+            ) : (
+              /* Strong / Open Vowel accentuation (ah, wow, excited): full expressive open mouth */
+              <g transform="translate(272, 322)">
+                <path
+                  d="M -23 -5 C -15 24 15 24 23 -5 C 15 -8 -15 -8 -23 -5 Z"
+                  fill="#171921"
+                  stroke="#171921"
+                  strokeWidth="3.6"
                   strokeLinejoin="round"
                 />
                 <path d="M -14 -4 C -8 -2 8 -2 14 -4 L 11 0 C 6 1 -6 1 -11 0 Z" fill="#ffffff" />
-                <ellipse cx="0" cy="10" rx="10" ry="6" fill="#f43f5e" />
+                <ellipse cx="0" cy="11" rx="10" ry="6.5" fill="#f43f5e" />
               </g>
-            ) : (
-              /* Open talking smile */
-              <path
-                d="M 254 318 C 263 330 281 330 290 318"
-                stroke="#171921"
-                strokeWidth="4.5"
-                strokeLinecap="round"
-              />
             )
           ) : (
             /* NON-TALKING STATIC EMOTIONAL MOUTHS */
