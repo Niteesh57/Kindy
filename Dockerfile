@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Install frontend dependencies
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy frontend source code and configuration
 COPY vite.config.js index.html ./
@@ -29,7 +29,7 @@ ENV PORT=8080
 
 # Install production dependencies for server
 COPY server/package*.json ./server/
-RUN cd server && npm ci --omit=dev
+RUN cd server && (npm ci --omit=dev --legacy-peer-deps || npm install --omit=dev --legacy-peer-deps)
 
 # Copy backend source code
 COPY server/ ./server/

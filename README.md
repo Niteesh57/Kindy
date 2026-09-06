@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Niteesh57/Kindy/main/assets/cover.png" alt="Kindy - Growing & Learning in a Positive Way" width="100%" />
+</p>
+
 # Kindy Avatar Studio 🎨✨
 
 Kindy is an interactive AI-powered educational avatar studio with real-time audio dialogues powered by Google Vertex AI / Gemini Flash and Gemini 3.1 Flash TTS.
