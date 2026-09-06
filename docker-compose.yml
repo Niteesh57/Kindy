@@ -1,0 +1,16 @@
+services:
+  kindy-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kindy-avatar-studio:latest
+    container_name: kindy-avatar-studio
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    env_file:
+      - path: ./server/.env
+        required: false
+    environment:
+      - PORT=${PORT:-8080}
+      - NODE_ENV=production
+    restart: unless-stopped

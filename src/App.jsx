@@ -64,6 +64,33 @@ if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   } catch (e) {}
 }
 
+export function getWebSocketUrl() {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+  if (typeof window !== 'undefined' && window.location) {
+    if (window.location.port === '5173') {
+      return 'ws://localhost:3001/ws/avatar';
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/avatar`;
+  }
+  return 'ws://localhost:3001/ws/avatar';
+}
+
+export function getApiChatUrl() {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  if (typeof window !== 'undefined' && window.location) {
+    if (window.location.port === '5173') {
+      return 'http://localhost:3001/api/chat';
+    }
+    return '/api/chat';
+  }
+  return 'http://localhost:3001/api/chat';
+}
+
 // Persistent Singleton WebSocket connection: EXACTLY ONE connection per window/tab preserved across renders & HMR
 function getOrCreatePersistentWs() {
   if (typeof window === 'undefined') return null;
@@ -93,7 +120,7 @@ function getOrCreatePersistentWs() {
   }
 
   try {
-    const ws = new WebSocket('ws://localhost:3001/ws/avatar');
+    const ws = new WebSocket(getWebSocketUrl());
     window.__KINDY_WS__ = ws;
 
     ws.onopen = () => {
@@ -1469,7 +1496,7 @@ export default function App() {
 
     // HTTP Fallback
     try {
-      const res = await fetch('http://localhost:3001/api/chat', {
+      const res = await fetch(getApiChatUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

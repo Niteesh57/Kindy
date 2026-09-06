@@ -11,6 +11,7 @@ import {
 } from './agent.js';
 import { synthesizeSpeech, SUPPORTED_VOICES } from './tts.js';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,10 +21,22 @@ dotenv.config();
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Static frontend build resolution (supports Docker, Cloud Run, and local builds)
+const potentialDistPaths = [
+  path.resolve(__dirname, '../dist'),
+  path.resolve(__dirname, 'dist'),
+  path.resolve(process.cwd(), 'dist'),
+];
+const distPath = potentialDistPaths.find((p) => fs.existsSync(p));
+if (distPath) {
+  console.log(`[Kindy Static] Serving frontend from: ${distPath}`);
+  app.use(express.static(distPath));
+}
 
 // Health & Diagnostic Endpoint
 app.get('/api/health', (req, res) => {
@@ -323,7 +336,46 @@ wss.on('close', () => {
   clearInterval(heartbeatInterval);
 });
 
-server.listen(PORT, () => {
-  console.log(`Kindy Avatar Vertex AI Server running on http://localhost:${PORT}`);
-  console.log(`WebSocket streaming available at ws://localhost:${PORT}/ws/avatar`);
+// Single Page Application (SPA) fallback: serve index.html for all non-API/non-WS requests
+if (distPath) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('\n=============================================================');
+  console.log(`🚀 Kindy Avatar Studio is LIVE and ready!`);
+  console.log(`   ➜ Frontend URL:        http://localhost:${PORT}`);
+  console.log(`   ➜ WebSocket Endpoint:  ws://localhost:${PORT}/ws/avatar`);
+  console.log(`   ➜ Health Check:        http://localhost:${PORT}/api/health`);
+  console.log(`   ➜ Bound to:            0.0.0.0:${PORT} (Cloud Run & Docker ready)`);
+  console.log('=============================================================\n');
 });
+
+// Graceful shutdown handling for Google Cloud Run and Docker containers
+const handleGracefulShutdown = (signal) => {
+  console.log(`\nReceived ${signal}. Gracefully closing Kindy server...`);
+  clearInterval(heartbeatInterval);
+
+  wss.close(() => {
+    console.log('WebSocket server closed.');
+    server.close(() => {
+      console.log('HTTP server closed. Exiting process.');
+      process.exit(0);
+    });
+  });
+
+  // Force close after 10 seconds if lingering connections remain
+  setTimeout(() => {
+    console.warn('Forcing process exit after shutdown timeout.');
+    process.exit(0);
+  }, 10000).unref();
+};
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
+
