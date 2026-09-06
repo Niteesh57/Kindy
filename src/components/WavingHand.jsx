@@ -19,12 +19,14 @@ export default function WavingHand({
     switch (gesture) {
       case 'say_hi':
       case 'wave_right':
+      case 'point_right':
       case 'one_up_one_down':
       case 'right_up_left_down':
         resolvedRight = resolvedRight || (isWaving ? 'wave' : 'up');
         resolvedLeft = resolvedLeft || 'down';
         break;
       case 'wave_left':
+      case 'point_left':
       case 'left_up_right_down':
         resolvedRight = resolvedRight || 'down';
         resolvedLeft = resolvedLeft || (isWaving ? 'wave' : 'up');

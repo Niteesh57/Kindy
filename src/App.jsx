@@ -20,6 +20,13 @@ import LaptopOverlay from './components/LaptopOverlay';
 import MapOverlay from './components/MapOverlay';
 import InteractiveToolHUD from './components/InteractiveToolHUD';
 import UserProfileModal from './components/UserProfileModal';
+import ActionCard from './components/ActionCard';
+import {
+  COFFEE_MAP_CARDS,
+  MOTIVATION_VOLUNTEER_CARDS,
+  buildCardsFromGrounding,
+  formatLLMCards,
+} from './constants/actionCardsData';
 import { parseExpressionText, mergeTags } from './utils/expressionParser';
 import hark from 'hark';
 import {
@@ -200,7 +207,12 @@ export default function App() {
   const [mouthEnergy, setMouthEnergy] = useState(0);
   const [talkingFrame, setTalkingFrame] = useState(0);
   const [speechBubbleText, setSpeechBubbleText] = useState('');
+  const [currentSpokenText, setCurrentSpokenText] = useState('');
   const [isGeminiLoading, setIsGeminiLoading] = useState(false);
+
+  // Interactive Action, Recommendation & Motivation Cards State (Decided dynamically by LLM / Grounding)
+  const [actionCards, setActionCards] = useState([]);
+  const [activeCardId, setActiveCardId] = useState(null);
 
   // Microphone & Speech Detection State
   const [isMuted, setIsMuted] = useState(false);
@@ -645,9 +657,8 @@ export default function App() {
         // Finished all segments: stop talking mouth, but KEEP the facial expression & pose!
         setIsTalking(false);
         setIsWaving(false);
-        setTimeout(() => {
-          setSpeechBubbleText('');
-        }, 2500);
+        setCurrentSpokenText('');
+        setSpeechBubbleText('');
         return;
       }
 
@@ -671,15 +682,17 @@ export default function App() {
         setRightHand(null);
       }
 
-      // 2. Prepare visual expression & single-line caption streamer
+      // 2. Prepare visual expression & speech text
       const fullSpokenText = (resolved.soundPrefix || '') + cleanText;
       setSpeechBubbleText(fullSpokenText);
+      setCurrentSpokenText(fullSpokenText);
       setIsTalking(true);
 
       // Pure visual talking animation (NO browser robotic voice, only Google TTS speaks!)
       const displayDuration = Math.max(1600, fullSpokenText.length * 60);
       setTimeout(() => {
         setIsTalking(false);
+        setCurrentSpokenText('');
         segmentIndex++;
         setTimeout(playNextSegment, 200);
       }, displayDuration);
@@ -869,6 +882,7 @@ export default function App() {
 
       const cleanText = rawText.replace(/\[.*?\]/g, '').trim();
       setSpeechBubbleText(cleanText);
+      setCurrentSpokenText(cleanText);
 
       // 3. Set talking state (suppresses microphone input during speech)
       setIsTalking(true);
@@ -885,6 +899,8 @@ export default function App() {
         audioSourceNodeRef.current = null;
         setIsTalking(false);
         isTalkingRef.current = false;
+        setCurrentSpokenText('');
+        setSpeechBubbleText('');
         setActiveEmotion('calm');
         setActiveTags(['calm']);
         setActiveHeadClass('');
@@ -931,6 +947,37 @@ export default function App() {
         try { audioSourceNodeRef.current.stop(); } catch (e) {}
         audioSourceNodeRef.current = null;
       }
+
+      // Helper function to dynamically advance the scrolling spoken text sentence-by-sentence in sync with speech
+      const scheduleSpokenSentences = (text, totalDurationSec) => {
+        if (!text || !totalDurationSec || totalDurationSec <= 0) return;
+
+        // Split by sentence boundaries (. ! ?) while preserving punctuation
+        const rawSentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) || [text];
+        const sentences = rawSentences.map((s) => s.trim()).filter(Boolean);
+        if (sentences.length === 0) return;
+
+        const totalChars = sentences.reduce((acc, s) => acc + s.length, 0);
+        let accumulatedFraction = 0;
+
+        // Immediately show the first sentence
+        setCurrentSpokenText(sentences[0]);
+
+        for (let i = 1; i < sentences.length; i++) {
+          const prevSentence = sentences[i - 1];
+          accumulatedFraction += prevSentence.length / totalChars;
+          const delayMs = Math.round(accumulatedFraction * totalDurationSec * 1000);
+
+          const nextSentence = sentences[i];
+          const timer = setTimeout(() => {
+            if (isTalkingRef.current) {
+              setCurrentSpokenText(nextSentence);
+            }
+          }, delayMs);
+
+          expressionTimersRef.current.push(timer);
+        }
+      };
 
       // Helper function to schedule timed emotion transitions over the total audio duration
       const scheduleSegmentTransitions = (totalDurationSec) => {
@@ -1036,8 +1083,9 @@ export default function App() {
           playedViaWebAudio = true;
           console.log(`🔊 Playing via Web Audio API with audio-driven lip sync (duration: ${audioBuffer.duration.toFixed(2)}s)`);
 
-          // Schedule multi-stage emotional shifts over speech duration
+          // Schedule multi-stage emotional shifts & spoken sentence streamer over speech duration
           scheduleSegmentTransitions(audioBuffer.duration);
+          scheduleSpokenSentences(cleanText, audioBuffer.duration);
         }
       } catch (ctxErr) {
         console.warn('Web Audio API decode failed, falling back to HTML5 Audio:', ctxErr);
@@ -1064,6 +1112,7 @@ export default function App() {
         audioEl.onloadedmetadata = () => {
           if (audioEl.duration && !isNaN(audioEl.duration)) {
             scheduleSegmentTransitions(audioEl.duration);
+            scheduleSpokenSentences(cleanText, audioEl.duration);
           }
         };
 
@@ -1095,6 +1144,7 @@ export default function App() {
     setIsGeminiLoading(true);
     isGeminiLoadingRef.current = true;
     setSpeechBubbleText('');
+    setCurrentSpokenText('');
 
     // Stop recording speech if still in progress
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -1142,7 +1192,6 @@ export default function App() {
       gesture: 'thinking_pose',
       leftHand: 'down',
       rightHand: 'thinking',
-      text: 'Thinking...',
       speak: false,
       isTalking: false,
     });
@@ -1205,6 +1254,29 @@ export default function App() {
                 query: msg.query || initialQuery || 'Grounding web information',
                 status: msg.status || 'Live Google Web Search Grounding',
               });
+            }
+          } else if (msg.type === 'cards') {
+            console.log('🎴 [Client] Received LLM-decided recommendation cards:', msg.cards?.length);
+            if (msg.cards && msg.cards.length > 0) {
+              const formattedCards = formatLLMCards(msg.cards);
+              if (formattedCards && formattedCards.length > 0) {
+                setActionCards(formattedCards);
+                const best = formattedCards.find((c) => c.isBestPick) || formattedCards[0];
+                setActiveCardId(best?.id || null);
+              }
+            }
+          } else if (msg.type === 'clear_cards') {
+            console.log('🧹 [Client] LLM instructed to clear cards from screen');
+            setActionCards([]);
+            setActiveCardId(null);
+          } else if (msg.type === 'grounding_sources') {
+            console.log('📍 [Client] Received grounding sources from Gemini:', msg.sources?.length);
+            if (msg.sources && msg.sources.length > 0) {
+              const dynamicCards = buildCardsFromGrounding(msg.sources);
+              if (dynamicCards && dynamicCards.length > 0) {
+                setActionCards(dynamicCards);
+                setActiveCardId(dynamicCards[0].id);
+              }
             }
           } else if (msg.type === 'chunk') {
             // Keep timeout alive while tokens are actively streaming
@@ -1342,6 +1414,43 @@ export default function App() {
   useEffect(() => {
     handleAskGeminiRef.current = handleAskGemini;
   }, [handleAskGemini]);
+
+  // Group action cards into 3 on left and 3 on right (Decided dynamically by LLM / Grounding)
+  const hasCards = Boolean(actionCards && actionCards.length > 0);
+  const leftCards = hasCards ? actionCards.filter((c) => c.side === 'left').slice(0, 3) : [];
+  const rightCards = hasCards ? actionCards.filter((c) => c.side === 'right').slice(0, 3) : [];
+  const displayLeftCards = leftCards.length > 0 ? leftCards : (hasCards ? actionCards.slice(0, 3) : []);
+  const displayRightCards = rightCards.length > 0 ? rightCards : (hasCards ? actionCards.slice(3, 6) : []);
+
+  const handleClearCards = useCallback(() => {
+    setActionCards([]);
+    setActiveCardId(null);
+  }, []);
+
+  // Handle interaction with Left & Right Action Cards
+  const handleCardClick = useCallback((card) => {
+    if (!card) return;
+    setActiveCardId(card.id);
+
+    // Kindy points / waves towards the side of the clicked card
+    if (card.side === 'left') {
+      setActiveGesture('wave_left');
+      setLeftHand('wave');
+      setRightHand('down');
+      setIsWaving(true);
+    } else {
+      setActiveGesture('wave_right');
+      setRightHand('wave');
+      setLeftHand('down');
+      setIsWaving(true);
+    }
+
+    const promptText =
+      card.motivationPrompt ||
+      `Tell me all about ${card.title} and motivate me on why visiting or volunteering here is amazing!`;
+
+    handleAskGeminiRef.current?.({ prompt: promptText });
+  }, []);
 
   // Save User Profile to localStorage and greet user warmly by name
   const handleSaveProfile = useCallback((profile) => {
@@ -1487,8 +1596,24 @@ export default function App() {
         />
       )}
 
-      {/* Main Full Character Area */}
-      <div className="avatar-main-hero">
+      {/* Main Full Character Area with Dynamic Actionable Cards (Rendered ONLY when LLM gives cards) */}
+      <div className={`avatar-main-hero ${hasCards ? 'has-side-cards' : 'no-side-cards'}`}>
+        {/* Left Column: 3 Action/Motivation Cards (Only if LLM decides to show cards) */}
+        {hasCards && (
+          <div className="side-cards-column side-cards-left" role="region" aria-label="Left recommendations">
+            {displayLeftCards.map((card) => (
+              <ActionCard
+                key={card.id}
+                card={card}
+                isBestPick={card.isBestPick}
+                isActive={activeCardId === card.id}
+                onClick={() => handleCardClick(card)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Center Avatar Character */}
         <div
           id="avatar-center-wrapper"
           className={`full-character-wrapper ${isBouncing ? 'bounce-active' : ''} ${
@@ -1557,25 +1682,61 @@ export default function App() {
             )}
           </div>
         </div>
+
+        {/* Right Column: 3 Action/Motivation Cards (Only if LLM decides to show cards) */}
+        {hasCards && (
+          <div className="side-cards-column side-cards-right" role="region" aria-label="Right recommendations">
+            {displayRightCards.map((card) => (
+              <ActionCard
+                key={card.id}
+                card={card}
+                isBestPick={card.isBestPick}
+                isActive={activeCardId === card.id}
+                onClick={() => handleCardClick(card)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Single-Line Caption Streamer Bar (Streamable, No Giant Bubble) */}
-      {speechBubbleText && (
-        <div className="single-line-caption-bar" role="status" aria-live="polite">
-          <span className="caption-speaker-tag">Kindy</span>
-          <span className="caption-text-stream">{speechBubbleText}</span>
+      {/* Floating Control Dock with Integrated Animated Popup Speech Bar */}
+      <div className="bottom-dock-wrapper">
+        {/* White Speech Popup Box (Pops up overlapping the dock bar while speaking, slides inside when done) */}
+        <div
+          className={`dock-speech-popup ${isTalking && (currentSpokenText || speechBubbleText) ? 'popup-active' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="dock-speech-inner">
+            <span className="dock-speech-avatar-tag">
+              <span className="equalizer-bars">
+                <span className="eq-bar bar-1" />
+                <span className="eq-bar bar-2" />
+                <span className="eq-bar bar-3" />
+              </span>
+              <span>Kindy</span>
+            </span>
+            <div className="dock-speech-ticker-container">
+              <span
+                key={currentSpokenText || speechBubbleText}
+                className={`dock-speech-ticker-text ${(currentSpokenText || speechBubbleText).length > 42 ? 'ticker-scroll' : ''}`}
+              >
+                {currentSpokenText || speechBubbleText}
+              </span>
+            </div>
+          </div>
         </div>
-      )}
 
-      {/* Floating Minimalist Control Dock: Memoized to isolate from re-renders */}
-      <ControlsDock
-        onRandomBg={handleRandomBg}
-        bgIconColor={currentBg.iconColor}
-        isMuted={isMuted}
-        onToggleMute={toggleMute}
-        isFullscreen={isFullscreen}
-        onToggleFullscreen={toggleFullscreen}
-      />
+        {/* Floating Minimalist Control Dock: Memoized to isolate from re-renders */}
+        <ControlsDock
+          onRandomBg={handleRandomBg}
+          bgIconColor={currentBg.iconColor}
+          isMuted={isMuted}
+          onToggleMute={toggleMute}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
+        />
+      </div>
 
       {/* User Onboarding & Profile Modal (Saved to localStorage permanently) */}
       <UserProfileModal

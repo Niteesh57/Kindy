@@ -35,10 +35,24 @@ CRITICAL VISUAL TAGS:
 - Start your response with an emotion and gesture tag in brackets.
 - Insert additional tags in the middle of your sentences as your emotion or tone changes.
 - Emotions: [happy], [cheerful], [excited], [joyful], [playful], [thinking], [thoughtfully], [calm], [peaceful], [crying], [sad], [angry], [confused]
-- Gestures: [say_hi], [hands_up], [hands_down], [thinking_pose], [cheer]
+- Gestures: [say_hi], [hands_up], [hands_down], [thinking_pose], [cheer], [wave_left], [wave_right]
 - Conclude with a resting pose: [calm, hands_down]
 - Example:
   "[cheerful, say_hi] Hi there! I am Kindy! [thinking, thinking_pose] Hmm, let me think about that... [excited, hands_up] Oh, I know the answer! [calm, hands_down]"
+
+CRITICAL MOTIVATIONAL CARDS & RECOMMENDATIONS INSTRUCTION:
+- BY DEFAULT, DO NOT SHOW ANY CARDS. Speak naturally and conversationally with the user as their warm, helpful companion.
+- ONLY when you decide that the user needs concrete choices, places to go, options to pick from, or volunteer opportunities to guide them, present recommendation cards using the [cards: ...] tag!
+- Example format:
+  [cards: [
+    {"title": "Blue Bottle Coffee", "category": "Ferry Building · 0.1 mi", "description": "Fresh espresso with scenic bay views", "isBestPick": true, "badge": "BEST PICK", "url": "https://maps.google.com/?q=Blue+Bottle+Coffee+Ferry+Building"},
+    {"title": "Red Bay Coffee", "category": "Embarcadero Plaza · 0.2 mi", "description": "Community-focused artisanal brews", "isBestPick": false, "badge": "ARTISAN"},
+    {"title": "Philz Coffee", "category": "101 Spear St · 0.3 mi", "description": "Famous handcrafted Mint Mojito iced coffee", "isBestPick": false, "badge": "FAN FAVORITE"}
+  ]]
+- Exactly ONE best recommendation should have "isBestPick": true (this highlights the card in vibrant green).
+- When mentioning cards, you can use [wave_left] or [wave_right] tags so you point toward them.
+- When the user asks to remove, close, or hide cards, output [clear_cards].
+- When you are simply answering a question, chit-chatting, or explaining without giving specific choices, do NOT output [cards: ...].
 `;
 
 /**
@@ -345,34 +359,89 @@ export async function streamAgentResponse(input, history = [], onChunk, options 
 
     // Check for grounding metadata or tool execution
     const candidate = chunk.candidates?.[0];
-    if (candidate?.groundingMetadata && options.onToolCall && !reportedTool) {
+    if (candidate?.groundingMetadata) {
       const gMeta = candidate.groundingMetadata;
-      if (gMeta.webSearchQueries && gMeta.webSearchQueries.length > 0) {
-        reportedTool = true;
-        options.onToolCall({
-          tool: 'google_search',
-          name: 'Google Search Engine',
-          queries: gMeta.webSearchQueries,
-          query: gMeta.webSearchQueries[0],
-          status: 'Grounding knowledge with Google Search...',
-        });
-      } else if (
-        gMeta.groundingChunks?.some(
-          (c) => c.maps || (c.web?.uri && c.web.uri.includes('maps.google'))
-        )
-      ) {
-        reportedTool = true;
-        options.onToolCall({
-          tool: 'google_maps',
-          name: 'Google Maps Grounding Engine',
-          status: 'Grounded geospatial data from Google Maps',
-        });
+
+      if (options.onToolCall && !reportedTool) {
+        if (gMeta.webSearchQueries && gMeta.webSearchQueries.length > 0) {
+          reportedTool = true;
+          options.onToolCall({
+            tool: 'google_search',
+            name: 'Google Search Engine',
+            queries: gMeta.webSearchQueries,
+            query: gMeta.webSearchQueries[0],
+            status: 'Grounding knowledge with Google Search...',
+          });
+        } else if (
+          gMeta.groundingChunks?.some(
+            (c) => c.maps || (c.web?.uri && c.web.uri.includes('maps.google'))
+          )
+        ) {
+          reportedTool = true;
+          options.onToolCall({
+            tool: 'google_maps',
+            name: 'Google Maps Grounding Engine',
+            status: 'Grounded geospatial data from Google Maps',
+          });
+        }
+      }
+
+      // Extract all citation chunks & Google Maps places
+      if (options.onSources && gMeta.groundingChunks && gMeta.groundingChunks.length > 0) {
+        const sources = gMeta.groundingChunks
+          .map((c) => {
+            if (c.web) {
+              return {
+                title: c.web.title || '',
+                url: c.web.uri || '',
+                isMaps: Boolean(
+                  c.web.uri &&
+                    (c.web.uri.includes('maps.google') ||
+                      c.web.uri.includes('google.com/maps') ||
+                      c.web.uri.includes('/place/'))
+                ),
+              };
+            }
+            if (c.maps) {
+              return {
+                title: c.maps.title || 'Google Maps Destination',
+                url: c.maps.uri || '',
+                isMaps: true,
+              };
+            }
+            return null;
+          })
+          .filter(Boolean);
+
+        if (sources.length > 0) {
+          options.onSources(sources);
+        }
       }
     }
 
     if (onChunk && chunkText) {
       onChunk(chunkText);
     }
+  }
+
+  // 1. Extract explicit LLM custom recommendation cards [cards: [...]]
+  const cardsMatch = fullText.match(/\[cards:\s*(\[[\s\S]*?\])\s*\]/);
+  if (cardsMatch && options.onCards) {
+    try {
+      const parsed = JSON.parse(cardsMatch[1]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        console.log(`[Agent] Extracted ${parsed.length} dynamic recommendation cards from LLM output!`);
+        options.onCards(parsed);
+      }
+    } catch (e) {
+      console.warn('[Agent] Could not parse [cards: ...] JSON:', e.message);
+    }
+  }
+
+  // 2. Check for explicit clear cards directive
+  if (fullText.includes('[clear_cards]') && options.onClearCards) {
+    console.log('[Agent] LLM requested to clear cards from screen.');
+    options.onClearCards();
   }
 
   return fullText;

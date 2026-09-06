@@ -212,6 +212,38 @@ wss.on('connection', (ws) => {
                 );
               }
             },
+            onSources: (sources) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log(`[Server] Grounding sources extracted: ${sources.length} links`);
+                ws.send(
+                  JSON.stringify({
+                    type: 'grounding_sources',
+                    sources,
+                  })
+                );
+              }
+            },
+            onCards: (cards) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log(`[Server] Emitting ${cards.length} LLM-decided recommendation cards`);
+                ws.send(
+                  JSON.stringify({
+                    type: 'cards',
+                    cards,
+                  })
+                );
+              }
+            },
+            onClearCards: () => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log('[Server] Emitting clear_cards to client');
+                ws.send(
+                  JSON.stringify({
+                    type: 'clear_cards',
+                  })
+                );
+              }
+            },
           }
         );
 
