@@ -7,6 +7,9 @@ import {
   Mic,
   MicOff,
   Sparkles,
+  X,
+  RotateCcw,
+  Settings,
 } from 'lucide-react';
 import WavingHand from './components/WavingHand';
 import ExpressionFaceOverlay from './components/ExpressionFaceOverlay';
@@ -201,7 +204,19 @@ export default function App() {
     const femaleVoices = ['Kore', 'Aoede', 'Leda'];
     return pickRandom(isMale ? maleVoices : femaleVoices);
   });
-  const [currentBg, setCurrentBg] = useState(() => VIBRANT_BACKGROUNDS[0]);
+  const [currentBg, setCurrentBg] = useState(() => {
+    try {
+      const lastBgId = sessionStorage.getItem('kindy_prev_bg_id');
+      const available = VIBRANT_BACKGROUNDS.filter((b) => b.id !== lastBgId);
+      const chosen = pickRandom(available.length > 0 ? available : VIBRANT_BACKGROUNDS) || VIBRANT_BACKGROUNDS[0];
+      if (chosen?.id) {
+        sessionStorage.setItem('kindy_prev_bg_id', chosen.id);
+      }
+      return chosen;
+    } catch {
+      return pickRandom(VIBRANT_BACKGROUNDS) || VIBRANT_BACKGROUNDS[0];
+    }
+  });
   const [isBouncing, setIsBouncing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isTypingMode, setIsTypingMode] = useState(false);
@@ -269,6 +284,11 @@ export default function App() {
   // Interactive Action, Recommendation & Motivation Cards State (Decided dynamically by LLM / Grounding)
   const [actionCards, setActionCards] = useState([]);
   const [activeCardId, setActiveCardId] = useState(null);
+
+  const handleClearCards = useCallback(() => {
+    setActionCards([]);
+    setActiveCardId(null);
+  }, []);
 
   // Microphone & Speech Detection State
   const [isMuted, setIsMuted] = useState(false);
@@ -612,11 +632,14 @@ export default function App() {
       } else if ((e.key === 'f' || e.key === 'F') && e.target === document.body) {
         e.preventDefault();
         toggleFullscreen();
+      } else if ((e.key === 'c' || e.key === 'C') && e.target === document.body) {
+        e.preventDefault();
+        handleClearCards();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleRandomBg, toggleMute, toggleFullscreen]);
+  }, [handleRandomBg, toggleMute, toggleFullscreen, handleClearCards]);
 
   // Fullscreen tracker
   useEffect(() => {
@@ -1581,11 +1604,6 @@ export default function App() {
   const displayLeftCards = leftCards.length > 0 ? leftCards : (hasCards ? actionCards.slice(0, 3) : []);
   const displayRightCards = rightCards.length > 0 ? rightCards : (hasCards ? actionCards.slice(3, 6) : []);
 
-  const handleClearCards = useCallback(() => {
-    setActionCards([]);
-    setActiveCardId(null);
-  }, []);
-
   // Handle interaction with Left & Right Action Cards
   const handleCardClick = useCallback((card) => {
     if (!card) return;
@@ -1627,6 +1645,27 @@ export default function App() {
       emotion: 'cheerful',
       gesture: 'say_hi',
       text: `[cheerful, say_hi] Wonderful to meet you, ${profile.name}! I am Kindy! [excited, hands_up] I am so excited to explore, talk, and learn together with you! [calm, hands_down]`,
+      speak: false,
+    });
+  }, []);
+
+  // Reset / Restart session: deletes saved profile from storage, resets state and conversation history
+  const handleResetSession = useCallback(() => {
+    try {
+      localStorage.removeItem('kindy_user_profile');
+    } catch (e) {
+      console.warn('Failed to clear profile from localStorage:', e);
+    }
+    setUserProfile(null);
+    userProfileRef.current = null;
+    setConversationHistory([]);
+    conversationHistoryRef.current = [];
+    setActionCards([]);
+    setActiveCardId(null);
+    express({
+      emotion: 'cheerful',
+      gesture: 'say_hi',
+      text: "[cheerful, say_hi] Session restarted! Let's start fresh. What is your name? [calm, hands_down]",
       speak: false,
     });
   }, []);
@@ -1696,18 +1735,29 @@ export default function App() {
           </button>
         )}
 
-        {/* User Profile Badge (Click to View/Edit Profile) */}
-        {userProfile?.name && (
+        {/* User Profile Badge (Click to View/Edit Profile & Session Settings) */}
+        {userProfile?.name ? (
           <button
             type="button"
             className="user-profile-badge-btn"
             onClick={() => setIsProfileModalOpen(true)}
-            title="Click to view or edit your profile"
+            title="Click to view or edit your profile & session settings"
           >
             <span className="user-profile-avatar-dot">
               {userProfile.name.charAt(0).toUpperCase()}
             </span>
             <span>Hi, {userProfile.name}</span>
+            <Settings size={13} style={{ opacity: 0.7, marginLeft: 2 }} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="user-profile-badge-btn guest-btn"
+            onClick={() => setIsProfileModalOpen(true)}
+            title="Set up your profile"
+          >
+            <Settings size={14} />
+            <span>Profile</span>
           </button>
         )}
 
@@ -1857,6 +1907,8 @@ export default function App() {
           onToggleMute={toggleMute}
           isFullscreen={isFullscreen}
           onToggleFullscreen={toggleFullscreen}
+          hasCards={hasCards}
+          onClearCards={handleClearCards}
         />
       </div>
 
@@ -1865,13 +1917,14 @@ export default function App() {
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
         onSave={handleSaveProfile}
+        onReset={handleResetSession}
         initialProfile={userProfile}
       />
     </div>
   );
 }
 
-// Rock-solid memoized dock: only re-renders when isMuted, isFullscreen, or background changes
+// Rock-solid memoized dock: only re-renders when isMuted, isFullscreen, background changes, or cards state changes
 const ControlsDock = memo(function ControlsDock({
   onRandomBg,
   bgIconColor,
@@ -1879,6 +1932,8 @@ const ControlsDock = memo(function ControlsDock({
   onToggleMute,
   isFullscreen,
   onToggleFullscreen,
+  hasCards,
+  onClearCards,
 }) {
   return (
     <div className="floating-controls-dock" role="toolbar" aria-label="Controls">
@@ -1927,6 +1982,20 @@ const ControlsDock = memo(function ControlsDock({
         <span>{isFullscreen ? 'Exit Full' : 'Full Screen'}</span>
         <span className="dock-shortcut">F</span>
       </button>
+
+      {/* 4. Clear Cards Button (Shown whenever recommendation cards are visible) */}
+      {hasCards && (
+        <button
+          type="button"
+          className="dock-control-btn clear-cards-dock-btn"
+          onClick={onClearCards}
+          title="Clear recommendation cards from screen (C)"
+        >
+          <X size={18} className="dock-icon" />
+          <span>Clear Cards</span>
+          <span className="dock-shortcut">C</span>
+        </button>
+      )}
     </div>
   );
 });

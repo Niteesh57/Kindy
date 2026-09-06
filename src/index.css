@@ -1804,6 +1804,37 @@ html, body {
   opacity: 0.8;
 }
 
+/* 5. Clear Cards Button in Dock (Shown when recommendation cards are on screen) */
+.dock-control-btn.clear-cards-dock-btn {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #e11d48;
+  animation: clear-btn-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-control-btn.clear-cards-dock-btn:hover {
+  background: #ffe4e6;
+  border-color: #fb7185;
+  color: #be123c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(225, 29, 72, 0.2);
+}
+
+.dock-control-btn.clear-cards-dock-btn .dock-icon {
+  color: #e11d48;
+}
+
+@keyframes clear-btn-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .primary-avatar-btn .dock-shortcut {
   background: rgba(255, 255, 255, 0.25);
   color: #ffffff;
@@ -1996,13 +2027,15 @@ html, body {
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
 }
 
-.status-button-grid {
+.status-button-grid,
+.status-options-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
 }
 
-.status-select-btn {
+.status-select-btn,
+.status-option-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2016,13 +2049,23 @@ html, body {
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   font-family: inherit;
+  outline: none;
 }
 
-.status-select-btn:hover {
+.status-select-btn:hover,
+.status-option-btn:hover {
   border-color: #cbd5e1;
   background: #f1f5f9;
+  transform: translateY(-1px);
+}
+
+.status-select-btn.selected,
+.status-option-btn.selected {
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  transform: translateY(-1px);
 }
 
 .location-label-row {
@@ -2034,28 +2077,82 @@ html, body {
 .detect-location-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 5px 12px;
   border-radius: 20px;
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  color: #475569;
-  font-size: 0.76rem;
-  font-weight: 600;
+  border: 1.5px solid #3b82f6;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 700;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+  animation: detect-glow-pulse 2.2s infinite ease-in-out;
+  position: relative;
+}
+
+@keyframes detect-glow-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.65), 0 0 10px rgba(59, 130, 246, 0.35);
+    transform: scale(1);
+    border-color: #3b82f6;
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(59, 130, 246, 0), 0 0 18px rgba(59, 130, 246, 0.6);
+    transform: scale(1.04);
+    border-color: #2563eb;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0), 0 0 10px rgba(59, 130, 246, 0.35);
+    transform: scale(1);
+    border-color: #3b82f6;
+  }
 }
 
 .detect-location-btn:hover {
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  color: #1e40af;
+  border-color: #1d4ed8;
+  box-shadow: 0 0 20px rgba(37, 99, 235, 0.65);
+  transform: scale(1.06);
+}
+
+.detect-location-btn.loading {
+  animation: none;
   background: #f1f5f9;
-  border-color: #94a3b8;
-  color: #1e293b;
+  border-color: #cbd5e1;
+  color: #64748b;
+  cursor: wait;
 }
 
 .detect-location-btn.success {
+  animation: none;
   background: #e6f4ea;
-  border-color: #a8dab5;
+  border-color: #34a853;
   color: #137333;
+  box-shadow: 0 0 12px rgba(52, 168, 83, 0.35);
+}
+
+.detect-radar-dot {
+  width: 7px;
+  height: 7px;
+  background-color: #3b82f6;
+  border-radius: 50%;
+  display: inline-block;
+  animation: radar-beacon 1.4s infinite ease-in-out;
+}
+
+@keyframes radar-beacon {
+  0%, 100% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+    background-color: #1d4ed8;
+  }
 }
 
 .location-hint {
@@ -2065,10 +2162,40 @@ html, body {
 }
 
 .profile-submit-row {
-  margin-top: 8px;
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-restart-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 13px 18px;
+  border-radius: 14px;
+  border: 1.5px solid #fecaca;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.profile-restart-btn:hover {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #b91c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.2);
 }
 
 .profile-save-btn {
+  flex: 1;
   width: 100%;
   display: flex;
   align-items: center;

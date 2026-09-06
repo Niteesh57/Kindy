@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Calendar, Briefcase, GraduationCap, Coffee, MapPin, Sparkles, X, Check } from 'lucide-react';
+import { User, Calendar, Briefcase, GraduationCap, Coffee, MapPin, Sparkles, X, Check, RotateCcw } from 'lucide-react';
 
 const STATUS_OPTIONS = [
   { id: 'Professional', label: 'Professional', icon: Briefcase, color: '#1a73e8', bg: '#e8f0fe' },
@@ -7,7 +7,7 @@ const STATUS_OPTIONS = [
   { id: 'Unemployed', label: 'Unemployed', icon: Coffee, color: '#b06000', bg: '#fef7e0' },
 ];
 
-export default function UserProfileModal({ isOpen, onClose, onSave, initialProfile }) {
+export default function UserProfileModal({ isOpen, onClose, onSave, onReset, initialProfile }) {
   const [name, setName] = useState(initialProfile?.name || '');
   const [age, setAge] = useState(initialProfile?.age || '');
   const [status, setStatus] = useState(initialProfile?.status || 'Professional');
@@ -112,6 +112,19 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
     onSave(profile);
   };
 
+  const handleRestart = () => {
+    if (window.confirm('Reset your profile and restart your session? This will clear saved data so you can start fresh with Kindy.')) {
+      if (onReset) onReset();
+      setName('');
+      setAge('');
+      setStatus('Professional');
+      setLocation('');
+      setLatitude(null);
+      setLongitude(null);
+      setError('');
+    }
+  };
+
   const isExisting = Boolean(initialProfile?.name);
 
   return (
@@ -152,18 +165,18 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
           <div className="profile-form-group">
             <label className="profile-field-label" htmlFor="user-name-input">
               <User size={16} />
-              <span>What is your name?</span>
+              <span>What should Kindy call you?</span>
               <span className="required-star">*</span>
             </label>
             <input
               id="user-name-input"
               type="text"
               className="profile-text-input"
-              placeholder="e.g. Alex, Maya, John..."
+              placeholder="Your name or nickname..."
               value={name}
               onChange={(e) => setName(e.target.value)}
-              required
               autoFocus
+              maxLength={40}
             />
           </div>
 
@@ -171,32 +184,31 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
           <div className="profile-form-group">
             <label className="profile-field-label" htmlFor="user-age-input">
               <Calendar size={16} />
-              <span>How old are you?</span>
+              <span>Age</span>
               <span className="required-star">*</span>
             </label>
             <input
               id="user-age-input"
               type="number"
-              min="1"
-              max="120"
               className="profile-text-input"
               placeholder="e.g. 24"
               value={age}
               onChange={(e) => setAge(e.target.value)}
-              required
+              min={5}
+              max={120}
             />
           </div>
 
-          {/* 3. Occupation / Status: Professional, Student, Unemployed */}
+          {/* 3. Life Stage / Status */}
           <div className="profile-form-group">
             <label className="profile-field-label">
               <Briefcase size={16} />
-              <span>Current Status</span>
+              <span>Life Stage / Occupation</span>
               <span className="required-star">*</span>
             </label>
             <div className="status-button-grid">
               {STATUS_OPTIONS.map((opt) => {
-                const IconComponent = opt.icon;
+                const IconComp = opt.icon;
                 const isSelected = status === opt.id;
                 return (
                   <button
@@ -215,7 +227,7 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
                         : {}
                     }
                   >
-                    <IconComponent size={18} />
+                    <IconComp size={18} />
                     <span>{opt.label}</span>
                   </button>
                 );
@@ -238,19 +250,23 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
                 }`}
                 onClick={handleDetectLocation}
                 disabled={isLocating}
-                title="Detect location automatically via GPS"
+                title="Click here to automatically detect your location via GPS"
               >
                 {locSuccess ? (
                   <>
-                    <Check size={13} />
+                    <Check size={14} />
                     <span>Detected!</span>
                   </>
                 ) : isLocating ? (
-                  <span>Detecting...</span>
+                  <>
+                    <span className="detect-radar-dot" />
+                    <span>Detecting GPS...</span>
+                  </>
                 ) : (
                   <>
-                    <MapPin size={13} />
-                    <span>Detect</span>
+                    <span className="detect-radar-dot" />
+                    <MapPin size={13} className="detect-pin-icon" />
+                    <span>Click to Detect</span>
                   </>
                 )}
               </button>
@@ -268,8 +284,19 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
             </span>
           </div>
 
-          {/* Submit Button */}
+          {/* Submit & Restart Buttons */}
           <div className="profile-submit-row">
+            {isExisting && (
+              <button
+                type="button"
+                className="profile-restart-btn"
+                onClick={handleRestart}
+                title="Delete saved session and start fresh"
+              >
+                <RotateCcw size={16} />
+                <span>Restart Session</span>
+              </button>
+            )}
             <button type="submit" className="profile-save-btn">
               <Sparkles size={18} />
               <span>{isExisting ? 'Update Profile' : "Save & Start Talking with Kindy"}</span>
