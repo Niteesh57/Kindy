@@ -90,11 +90,14 @@ function getClient() {
     dotenv.config({ path: path.resolve(__dirname, '.env') });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY || process.env.VERTEX_API_KEY;
+  const rawKey = process.env.GEMINI_API_KEY || process.env.VERTEX_API_KEY;
 
-  if (!apiKey) {
+  if (!rawKey) {
     return null;
   }
+
+  // Defensively sanitize key in case quotes or appended variables were passed via CLI/env
+  const apiKey = rawKey.trim().replace(/^["']|["']$/g, '').split(/\s+/)[0];
 
   if (!genAIClient) {
     genAIClient = new GoogleGenAI({ vertexai: true, apiKey });
