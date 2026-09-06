@@ -117,6 +117,13 @@ export function parseExpressionText(rawText) {
   let match;
 
   while ((match = tagRegex.exec(rawText)) !== null) {
+    const tagContent = match[1];
+    // Filter out [cards: [...]] or clear directives from being treated as emotions
+    if (tagContent.startsWith('cards:') || tagContent.startsWith('cards :') || tagContent.includes('{') || tagContent === 'clear_cards') {
+      lastIndex = tagRegex.lastIndex;
+      continue;
+    }
+
     const textBefore = rawText.slice(lastIndex, match.index).trim();
     if (textBefore) {
       segments.push({
@@ -127,7 +134,6 @@ export function parseExpressionText(rawText) {
     }
 
     // Extract tags from bracket "[excitedly, very_fast]"
-    const tagContent = match[1];
     currentTags = tagContent
       .split(',')
       .map((t) => t.trim())
@@ -151,6 +157,42 @@ export function parseExpressionText(rawText) {
       cleanText: rawText.replace(/\[.*?\]/g, '').trim() || '...',
       resolved: mergeTags(currentTags),
     });
+  }
+
+  // If only 1 segment was extracted (or LLM didn't insert intermediate tags),
+  // split across sentence boundaries to allow natural multi-emotion progression!
+  if (segments.length === 1 && segments[0].cleanText) {
+    const text = segments[0].cleanText;
+    const sentenceMatches = text.match(/[^.!?]+(?:[.!?]+|$)/g);
+    if (sentenceMatches && sentenceMatches.length > 1) {
+      const initialTags = segments[0].tags;
+      const initialPrimary = initialTags[0] || 'cheerful';
+
+      // Transition away from crying/sad into thoughtful and excited emotions during explanation
+      const secondaryTags = (initialPrimary === 'crying' || initialPrimary === 'sad')
+        ? ['thinking', 'thinking_pose']
+        : ['thinking', 'thinking_pose'];
+      const tertiaryTags = ['excited', 'wave_left'];
+      const finalTags = ['peaceful', 'calm'];
+
+      const emotionalPalette = [initialTags, secondaryTags, tertiaryTags, finalTags];
+
+      const refinedSegments = [];
+      sentenceMatches.forEach((s, idx) => {
+        const sentenceText = s.trim();
+        if (!sentenceText) return;
+        const tagSet = emotionalPalette[Math.min(idx, emotionalPalette.length - 1)];
+        refinedSegments.push({
+          tags: tagSet,
+          cleanText: sentenceText,
+          resolved: mergeTags(tagSet),
+        });
+      });
+
+      if (refinedSegments.length > 0) {
+        return refinedSegments;
+      }
+    }
   }
 
   return segments;

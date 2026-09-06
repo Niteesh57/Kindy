@@ -545,9 +545,9 @@ export default function App() {
           clearTimeout(silenceTimerRef.current);
         }
 
-        // Buffer time: wait 900ms of silence before finalizing and sending to LLM (fast, responsive turn-taking)
+        // Buffer time: wait 1900ms (base 900ms + 1000ms added buffer) of silence before cutting off and sending to LLM
         silenceTimerRef.current = setTimeout(() => {
-          console.log('[Hark VAD] Silence threshold reached — finalizing and sending to LLM...');
+          console.log('[Hark VAD] Silence threshold reached (with 1s extra buffer: 1900ms) — finalizing and sending to LLM...');
           isRecordingSpeechRef.current = false;
           isUserSpeakingRef.current = false;
           setIsUserSpeaking(false);
@@ -558,7 +558,7 @@ export default function App() {
               mediaRecorderRef.current.stop();
             } catch (e) {}
           }
-        }, 900); // 900ms natural conversational pause
+        }, 1900); // 1.9s natural conversational pause with added 1 sec buffer
       });
     } catch (err) {
       console.warn('Voice capture initialization error:', err);
@@ -1077,6 +1077,23 @@ export default function App() {
         const totalCharCount = segments.reduce((sum, s) => sum + (s.cleanText?.length || 10), 0);
         let elapsedFraction = 0;
 
+        // If the initial emotion is crying or sad, cap it at max 2.2s so it doesn't linger while explaining
+        const initialPrimary = segments[0]?.tags?.[0];
+        if (initialPrimary === 'crying' || initialPrimary === 'sad') {
+          const firstDelay = Math.round(((segments[0].cleanText?.length || 10) / totalCharCount) * totalDurationSec * 1000);
+          if (firstDelay > 2200) {
+            const earlyPerkUpTimer = setTimeout(() => {
+              if (isTalkingRef.current) {
+                setActiveTags(['thinking', 'thinking_pose']);
+                setActiveEmotion('thinking');
+                setActiveGesture('thinking_pose');
+                setIsWaving(false);
+              }
+            }, 2200);
+            expressionTimersRef.current.push(earlyPerkUpTimer);
+          }
+        }
+
         // Skip index 0 because it starts immediately at time 0
         for (let i = 1; i < segments.length; i++) {
           const prevSeg = segments[i - 1];
@@ -1298,7 +1315,7 @@ export default function App() {
     const ws = getOrCreatePersistentWs();
     if (ws && ws.readyState === WebSocket.OPEN) {
       let accumulated = '';
-      let hasTriggeredEmotion = false;
+      let lastTriggeredTag = null;
 
       // Dynamic safety timeout: ample time for LLM streaming + Gemini TTS synthesis
       let safetyTimer = null;
@@ -1404,21 +1421,26 @@ export default function App() {
             const cleanText = stripCardsAndTags(accumulated);
             setSpeechBubbleText(cleanText);
 
-            if (!hasTriggeredEmotion && accumulated.includes('[')) {
+            // Dynamically update emotions in real-time as each new bracket tag streams in
+            if (accumulated.includes('[')) {
               const segments = parseExpressionText(accumulated);
-              if (segments && segments[0] && segments[0].tags) {
-                const tag = segments[0].tags[0];
-                setActiveEmotion(tag);
-                setActiveTags(segments[0].tags);
-                if (segments[0].resolved?.gesture) {
-                  setActiveGesture(segments[0].resolved.gesture);
-                  setIsWaving(
-                    segments[0].resolved.gesture.includes('wave') ||
-                    segments[0].resolved.gesture.includes('cheer') ||
-                    segments[0].resolved.gesture === 'say_hi'
-                  );
+              const latestSegment = segments?.[segments.length - 1];
+              if (latestSegment && latestSegment.tags && latestSegment.tags.length > 0) {
+                const latestTag = latestSegment.tags[0];
+                if (latestTag !== lastTriggeredTag) {
+                  lastTriggeredTag = latestTag;
+                  setActiveEmotion(latestTag);
+                  setActiveTags(latestSegment.tags);
+                  if (latestSegment.resolved?.gesture) {
+                    setActiveGesture(latestSegment.resolved.gesture);
+                    setIsWaving(
+                      latestSegment.resolved.gesture.includes('wave') ||
+                      latestSegment.resolved.gesture.includes('cheer') ||
+                      latestSegment.resolved.gesture === 'say_hi' ||
+                      latestSegment.resolved.gesture === 'hands_up'
+                    );
+                  }
                 }
-                hasTriggeredEmotion = true;
               }
             }
           } else if (msg.type === 'audio') {
