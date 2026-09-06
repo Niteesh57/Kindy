@@ -3,7 +3,12 @@ import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import dotenv from 'dotenv';
-import { generateAgentResponse, streamAgentResponse } from './agent.js';
+import {
+  generateAgentResponse,
+  streamAgentResponse,
+  createMapSearchInteraction,
+  detectToolIntent,
+} from './agent.js';
 import { synthesizeSpeech, SUPPORTED_VOICES } from './tts.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -26,9 +31,10 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: hasKey,
-    flashModel: process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash',
+    flashModel: process.env.GEMINI_FLASH_MODEL || 'gemini-3.8-flash',
     ttsModel: process.env.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview',
     defaultVoice: process.env.GEMINI_TTS_VOICE || 'Zephyr',
+    tools: ['google_search', 'google_maps'],
   });
 });
 
@@ -40,7 +46,7 @@ app.get('/api/voices', (req, res) => {
 // Non-Streaming Full Turn Chat Endpoint (Supports Audio or Text)
 app.post('/api/chat', async (req, res) => {
   try {
-    const { prompt, audio, audioBase64, mimeType, voice = 'Zephyr', history = [] } = req.body;
+    const { prompt, audio, audioBase64, mimeType, voice = 'Zephyr', history = [], userProfile, profile } = req.body;
     const inputPayload =
       audio || audioBase64
         ? { audioBase64: audio || audioBase64, mimeType: mimeType || 'audio/webm' }
@@ -50,8 +56,10 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Prompt or audio is required' });
     }
 
-    // 1. Generate text dialogue with Gemini Flash (ADK)
-    const dialogue = await generateAgentResponse(inputPayload, history);
+    // 1. Generate text dialogue with Gemini Flash (ADK) personalized with userProfile
+    const dialogue = await generateAgentResponse(inputPayload, history, {
+      userProfile: userProfile || profile,
+    });
 
     // 2. Synthesize voiceover audio with Gemini 3.1 Flash TTS Preview
     let audioData = null;
@@ -79,6 +87,51 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Grounded Google Search & Google Maps Interactions Endpoint (gemini-3.8-flash)
+app.post('/api/interactions', async (req, res) => {
+  try {
+    const {
+      input = 'Find coffee shops near the Ferry Building in San Francisco that are open now.',
+      latitude = 37.7955,
+      longitude = -122.3937,
+      voice = 'Zephyr',
+    } = req.body;
+
+    const result = await createMapSearchInteraction({
+      input,
+      latitude,
+      longitude,
+    });
+
+    let audioData = null;
+    if (result.text && result.text.trim()) {
+      try {
+        audioData = await synthesizeSpeech(result.text, { voice });
+      } catch (err) {
+        console.warn('TTS note for interactions:', err.message);
+      }
+    }
+
+    res.json({
+      text: result.text,
+      audio: audioData ? audioData.audioBase64 : null,
+      mimeType: audioData ? audioData.mimeType : null,
+      step: result.step,
+      groundingMetadata: result.groundingMetadata,
+      source: result.source,
+      tool: 'google_maps',
+      toolData: {
+        tool: 'google_maps',
+        name: 'Google Maps Grounding Engine',
+        query: input,
+      },
+    });
+  } catch (error) {
+    console.error('API /api/interactions error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Create HTTP server for Express and WebSockets
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/avatar' });
@@ -97,7 +150,7 @@ wss.on('connection', (ws) => {
   ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message.toString());
-      const { type, prompt, audio, audioBase64, mimeType, voice = 'Zephyr', history = [] } = data;
+      const { type, prompt, audio, audioBase64, mimeType, voice = 'Zephyr', history = [], userProfile, profile } = data;
 
       const isAudioInput = type === 'audio' && (audioBase64 || audio);
       const isPromptInput = type === 'prompt' && prompt;
@@ -108,29 +161,59 @@ wss.on('connection', (ws) => {
           ? { audioBase64: audioBase64 || audio, mimeType: mimeType || 'audio/webm' }
           : prompt;
 
+        // Instant tool detection from prompt
+        const initialTool = isPromptInput ? detectToolIntent(prompt) : null;
+        if (initialTool && ws.readyState === WebSocket.OPEN) {
+          console.log(`[Server] Instant tool call: ${initialTool.tool} for "${prompt}"`);
+          ws.send(
+            JSON.stringify({
+              type: 'tool_call',
+              ...initialTool,
+            })
+          );
+        }
+
         // Sentence-boundary trigger for pre-fetching early TTS
         let ttsPromise = null;
         let earlyPrefetched = false;
 
         // 1. Stream tokens from Gemini Flash (processes spoken voice or prompt text directly)
-        await streamAgentResponse(inputPayload, history, (chunk) => {
-          accumulatedText += chunk;
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                type: 'chunk',
-                text: chunk,
-                accumulated: accumulatedText,
-              })
-            );
-          }
+        await streamAgentResponse(
+          inputPayload,
+          history,
+          (chunk) => {
+            accumulatedText += chunk;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: 'chunk',
+                  text: chunk,
+                  accumulated: accumulatedText,
+                })
+              );
+            }
 
-          // Pre-fetch TTS as soon as a substantial thought/sentence completes (min 80 chars and ends in punctuation)
-          if (!earlyPrefetched && accumulatedText.length >= 80 && /[.!?]\s*$/.test(accumulatedText)) {
-            earlyPrefetched = true;
-            console.log(`[Server] Fast-path: triggering early TTS pipeline for sentence...`);
+            // Pre-fetch TTS as soon as a substantial thought/sentence completes (min 80 chars and ends in punctuation)
+            if (!earlyPrefetched && accumulatedText.length >= 80 && /[.!?]\s*$/.test(accumulatedText)) {
+              earlyPrefetched = true;
+              console.log(`[Server] Fast-path: triggering early TTS pipeline for sentence...`);
+            }
+          },
+          {
+            userProfile: userProfile || profile,
+            onToolCall: (toolData) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log(`[Server] Tool called during stream: ${toolData.tool}`);
+                ws.send(
+                  JSON.stringify({
+                    type: 'tool_call',
+                    ...toolData,
+                  })
+                );
+              }
+            },
           }
-        });
+        );
 
         console.log(`[Server] LLM finished streaming. Text: "${accumulatedText.trim().slice(0, 80)}..."`);
 

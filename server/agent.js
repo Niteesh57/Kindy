@@ -41,6 +41,28 @@ CRITICAL VISUAL TAGS:
   "[cheerful, say_hi] Hi there! I am Kindy! [thinking, thinking_pose] Hmm, let me think about that... [excited, hands_up] Oh, I know the answer! [calm, hands_down]"
 `;
 
+/**
+ * Format system instruction with user profile for personalized interaction
+ */
+export function getSystemInstructionWithProfile(profile) {
+  if (!profile || !profile.name) {
+    return SYSTEM_INSTRUCTION;
+  }
+
+  return `${SYSTEM_INSTRUCTION}
+
+CRITICAL USER PROFILE INFORMATION:
+- Name: ${profile.name}
+- Age: ${profile.age || 'Not specified'}
+- Status / Occupation: ${profile.status || 'Not specified'}
+- Location: ${profile.location || 'Not specified'}
+
+PERSONALIZATION RULES:
+- Address the user by their name ("${profile.name}") naturally when greeting them or in conversation.
+- Use their age, status (${profile.status}), and location (${profile.location}) to provide customized, highly relevant responses and recommendations.
+`;
+}
+
 let clientInstance = null;
 
 function getClient() {
@@ -87,13 +109,115 @@ function formatInputParts(input) {
 }
 
 /**
- * Generate full response from Gemini Flash
+/**
+ * Grounding tools for Google Search & Google Maps
+ */
+export const GROUNDING_TOOLS = [
+  { googleSearch: {} },
+  { googleMaps: {} },
+];
+
+/**
+ * Standard Interactions Tool definitions
+ */
+export const INTERACTION_TOOLS = [
+  { type: 'google_search' },
+  { type: 'google_maps', latitude: 37.7955, longitude: -122.3937 },
+];
+
+/**
+ * Create a search or Google Maps interaction using models/gemini-3.8-flash
+ * Supports both ai.interactions.create and grounded models.generateContent
+ */
+export async function createMapSearchInteraction({
+  input = 'Find coffee shops near the Ferry Building in San Francisco that are open now.',
+  latitude = 37.7955,
+  longitude = -122.3937,
+  model = 'models/gemini-3.8-flash',
+  maxOutputTokens = 1024,
+  thinkingLevel = 'low',
+} = {}) {
+  const client = getClient();
+  if (!client) {
+    throw new Error(
+      'Gemini / Vertex AI API key not configured. Please set GEMINI_API_KEY in server/.env'
+    );
+  }
+
+  const promptText = typeof input === 'string' ? input : input?.prompt || 'Search places nearby';
+  const cleanModel = model.startsWith('models/') ? model : `models/${model}`;
+  const rawModelName = cleanModel.replace('models/', '');
+
+  const tools = [
+    { type: 'google_search' },
+    { type: 'google_maps', latitude, longitude },
+  ];
+
+  const generationConfig = {
+    max_output_tokens: maxOutputTokens,
+    thinkingLevel,
+  };
+
+  // 1. Try native ai.interactions.create
+  if (client.interactions && typeof client.interactions.create === 'function') {
+    try {
+      console.log(`[Interactions] Calling ai.interactions.create with ${cleanModel}...`);
+      const interaction = await client.interactions.create({
+        model: cleanModel,
+        input: promptText,
+        tools,
+        generation_config: generationConfig,
+      });
+
+      const lastStep = interaction.steps?.at(-1);
+      console.log(`[Interactions] Success via interactions.create`);
+      return {
+        text: lastStep?.text || interaction.text || '',
+        interaction,
+        step: lastStep,
+        source: 'interactions.create',
+      };
+    } catch (interactionErr) {
+      console.warn(
+        `[Interactions] ai.interactions.create fallback to models.generateContent: ${interactionErr.message}`
+      );
+    }
+  }
+
+  // 2. High-performance models.generateContent with Google Maps + Search grounding
+  console.log(`[Grounding] Calling models.generateContent with ${rawModelName} and [googleSearch, googleMaps]...`);
+  const response = await client.models.generateContent({
+    model: rawModelName,
+    contents: promptText,
+    config: {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      temperature: 0.7,
+      maxOutputTokens,
+      thinkingLevel,
+      tools: [
+        { googleSearch: {} },
+        { googleMaps: {} },
+      ],
+    },
+  });
+
+  return {
+    text: response.text || '',
+    candidates: response.candidates,
+    groundingMetadata: response.candidates?.[0]?.groundingMetadata,
+    source: 'models.generateContent',
+  };
+}
+
+/**
+ * Generate full response from Gemini Flash with Google Search & Maps Grounding
  * @param {string|object} input Text prompt or { audioBase64, mimeType }
  * @param {Array} history
+ * @param {object} options
  * @returns {Promise<string>}
  */
-export async function generateAgentResponse(input, history = []) {
-  const model = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';
+export async function generateAgentResponse(input, history = [], options = {}) {
+  const model = options.model || process.env.GEMINI_FLASH_MODEL || 'gemini-3.8-flash';
   const client = getClient();
 
   if (!client) {
@@ -119,9 +243,14 @@ export async function generateAgentResponse(input, history = []) {
     model,
     contents,
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: getSystemInstructionWithProfile(options.userProfile || options.profile),
       temperature: 0.7,
-      maxOutputTokens: 120,
+      maxOutputTokens: 1024,
+      thinkingLevel: 'low',
+      tools: [
+        { googleSearch: {} },
+        { googleMaps: {} },
+      ],
     },
   });
 
@@ -129,14 +258,48 @@ export async function generateAgentResponse(input, history = []) {
 }
 
 /**
- * Stream response tokens in real-time from Gemini Flash
+ * Intent detection for Google Maps and Google Search tools
+ */
+export function detectToolIntent(input) {
+  const text = typeof input === 'string' ? input : input?.prompt || '';
+  if (!text || typeof text !== 'string') return null;
+  const lower = text.toLowerCase();
+
+  // 1. Google Maps Grounding Intent (locations, places, directions, navigation, cafes, etc.)
+  const mapRegex = /\b(map|maps|location|locations|place|places|directions?|route|routes|near|nearby|where is|navigate|address|ferry building|san francisco|city|park|parks|coffee|cafe|restaurant|food|hotel|museum|stores?|campus|marina|distance|gps)\b/i;
+  if (mapRegex.test(lower)) {
+    return {
+      tool: 'google_maps',
+      name: 'Google Maps Grounding Engine',
+      query: text,
+      status: 'Locating places & geospatial data...',
+    };
+  }
+
+  // 2. Google Search Grounding Intent (facts, web search, weather, news, current events, info)
+  const searchRegex = /\b(search|find|google|look up|what is|who is|when is|where did|why does|how many|latest|recent|news|weather|price of|stocks?|definition|research|fact check)\b/i;
+  if (searchRegex.test(lower)) {
+    return {
+      tool: 'google_search',
+      name: 'Google Search Engine',
+      query: text,
+      status: 'Grounding knowledge with Google Search...',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Stream response tokens in real-time from Gemini Flash with Google Search & Maps Grounding
  * @param {string|object} input Text prompt or { audioBase64, mimeType }
  * @param {Array} history
  * @param {Function} onChunk Callback called with each text chunk
+ * @param {object} options
  * @returns {Promise<string>} Full accumulated response text
  */
-export async function streamAgentResponse(input, history = [], onChunk) {
-  const model = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';
+export async function streamAgentResponse(input, history = [], onChunk, options = {}) {
+  const model = options.model || process.env.GEMINI_FLASH_MODEL || 'gemini-3.8-flash';
   const client = getClient();
 
   if (!client) {
@@ -162,16 +325,51 @@ export async function streamAgentResponse(input, history = [], onChunk) {
     model,
     contents,
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: getSystemInstructionWithProfile(options.userProfile || options.profile),
       temperature: 0.7,
-      maxOutputTokens: 450,
+      maxOutputTokens: 1024,
+      thinkingLevel: 'low',
+      tools: [
+        { googleSearch: {} },
+        { googleMaps: {} },
+      ],
     },
   });
 
   let fullText = '';
+  let reportedTool = false;
+
   for await (const chunk of stream) {
     const chunkText = chunk.text || '';
     fullText += chunkText;
+
+    // Check for grounding metadata or tool execution
+    const candidate = chunk.candidates?.[0];
+    if (candidate?.groundingMetadata && options.onToolCall && !reportedTool) {
+      const gMeta = candidate.groundingMetadata;
+      if (gMeta.webSearchQueries && gMeta.webSearchQueries.length > 0) {
+        reportedTool = true;
+        options.onToolCall({
+          tool: 'google_search',
+          name: 'Google Search Engine',
+          queries: gMeta.webSearchQueries,
+          query: gMeta.webSearchQueries[0],
+          status: 'Grounding knowledge with Google Search...',
+        });
+      } else if (
+        gMeta.groundingChunks?.some(
+          (c) => c.maps || (c.web?.uri && c.web.uri.includes('maps.google'))
+        )
+      ) {
+        reportedTool = true;
+        options.onToolCall({
+          tool: 'google_maps',
+          name: 'Google Maps Grounding Engine',
+          status: 'Grounded geospatial data from Google Maps',
+        });
+      }
+    }
+
     if (onChunk && chunkText) {
       onChunk(chunkText);
     }

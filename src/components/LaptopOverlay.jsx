@@ -52,7 +52,7 @@ const SEARCH_OPERATIONS = [
   },
 ];
 
-export default function LaptopOverlay({ isTalking = false }) {
+export default function LaptopOverlay({ isTalking = false, activeQuery = '' }) {
   const [opIndex, setOpIndex] = useState(0);
   const [animKey, setAnimKey] = useState(0);
 
@@ -205,7 +205,7 @@ export default function LaptopOverlay({ isTalking = false }) {
               fontWeight="400"
               className="search-detail-text"
             >
-              {current.detail}
+              {activeQuery ? (activeQuery.length > 34 ? `"${activeQuery.slice(0, 34)}..."` : `"${activeQuery}"`) : current.detail}
             </text>
           </g>
 

@@ -11,12 +11,15 @@ import {
   Sparkles,
   Laptop,
   Compass,
+  Search,
 } from 'lucide-react';
 import WavingHand from './components/WavingHand';
 import ExpressionFaceOverlay from './components/ExpressionFaceOverlay';
 import ExpressionPlayground from './components/ExpressionPlayground';
 import LaptopOverlay from './components/LaptopOverlay';
 import MapOverlay from './components/MapOverlay';
+import InteractiveToolHUD from './components/InteractiveToolHUD';
+import UserProfileModal from './components/UserProfileModal';
 import { parseExpressionText, mergeTags } from './utils/expressionParser';
 import hark from 'hark';
 import {
@@ -156,7 +159,34 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isTypingMode, setIsTypingMode] = useState(false);
-  const [isMapMode, setIsMapMode] = useState(true);
+  const [isMapMode, setIsMapMode] = useState(false);
+  const [activeTool, setActiveTool] = useState(null);
+  const [selectedWaypointIdx, setSelectedWaypointIdx] = useState(0);
+  const toolDismissTimerRef = useRef(null);
+
+  // User Profile (Stored in localStorage permanently, asked only on first open)
+  const [userProfile, setUserProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem('kindy_user_profile');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(() => {
+    try {
+      const saved = localStorage.getItem('kindy_user_profile');
+      return !saved;
+    } catch {
+      return true;
+    }
+  });
+
+  const userProfileRef = useRef(userProfile);
+  useEffect(() => {
+    userProfileRef.current = userProfile;
+  }, [userProfile]);
 
   // Expression & Speech State
   const [isTalking, setIsTalking] = useState(false);
@@ -863,6 +893,14 @@ export default function App() {
         setRightHand('down');
         setIsWaving(false);
 
+        // Allow user 8 seconds to view & interact with the tool results before smoothly returning to rest
+        if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
+        toolDismissTimerRef.current = setTimeout(() => {
+          setIsMapMode(false);
+          setIsTypingMode(false);
+          setActiveTool(null);
+        }, 8000);
+
         setTimeout(() => {
           setSpeechBubbleText('');
           setUserSpeechText('');
@@ -1066,6 +1104,38 @@ export default function App() {
     isUserSpeakingRef.current = false;
     setIsUserSpeaking(false);
 
+    if (toolDismissTimerRef.current) {
+      clearTimeout(toolDismissTimerRef.current);
+      toolDismissTimerRef.current = null;
+    }
+
+    // Instant tool pre-activation from prompt/speech
+    const initialQuery = typeof prompt === 'string' ? prompt : userSpeechText || '';
+    if (initialQuery) {
+      const lower = initialQuery.toLowerCase();
+      const isMaps = /\b(map|maps|location|locations|place|places|directions?|route|routes|near|nearby|where is|navigate|address|ferry building|san francisco|city|park|coffee|cafe|restaurant|hotel|museum)\b/i.test(lower);
+      const isSearch = /\b(search|find|google|look up|what is|who is|when is|where did|why does|how many|latest|recent|news|weather|price of)\b/i.test(lower);
+      if (isMaps) {
+        setIsMapMode(true);
+        setIsTypingMode(false);
+        setActiveTool({
+          tool: 'google_maps',
+          name: 'Google Maps Tool',
+          query: initialQuery,
+          status: 'Locating nearby spots & analyzing routes',
+        });
+      } else if (isSearch) {
+        setIsTypingMode(true);
+        setIsMapMode(false);
+        setActiveTool({
+          tool: 'google_search',
+          name: 'Google Search Tool',
+          query: initialQuery,
+          status: 'Querying web sources & verifying facts',
+        });
+      }
+    }
+
     // Set immediate thinking gesture & emotion (pure visual)
     express({
       emotion: 'thinking',
@@ -1111,7 +1181,32 @@ export default function App() {
       const turnListener = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'chunk') {
+          if (msg.type === 'tool_call') {
+            console.log('🛠️ [Client] Tool call event received:', msg.tool, msg.query);
+            if (toolDismissTimerRef.current) {
+              clearTimeout(toolDismissTimerRef.current);
+              toolDismissTimerRef.current = null;
+            }
+            if (msg.tool === 'google_maps') {
+              setIsMapMode(true);
+              setIsTypingMode(false);
+              setActiveTool({
+                tool: 'google_maps',
+                name: 'Google Maps Tool',
+                query: msg.query || initialQuery || 'Coffee shops near Ferry Building, San Francisco',
+                status: msg.status || 'Grounding geospatial data with Google Maps',
+              });
+            } else if (msg.tool === 'google_search') {
+              setIsTypingMode(true);
+              setIsMapMode(false);
+              setActiveTool({
+                tool: 'google_search',
+                name: 'Google Search Tool',
+                query: msg.query || initialQuery || 'Grounding web information',
+                status: msg.status || 'Live Google Web Search Grounding',
+              });
+            }
+          } else if (msg.type === 'chunk') {
             // Keep timeout alive while tokens are actively streaming
             setSafetyTimeout(40000);
             accumulated = msg.accumulated || (accumulated + msg.text);
@@ -1178,8 +1273,19 @@ export default function App() {
       window.__KINDY_WS_LISTENERS__.add(turnListener);
 
       const payload = audioBase64
-        ? { type: 'audio', audioBase64, mimeType: mimeType || 'audio/webm', voice }
-        : { type: 'prompt', prompt, voice };
+        ? {
+            type: 'audio',
+            audioBase64,
+            mimeType: mimeType || 'audio/webm',
+            voice,
+            userProfile: userProfileRef.current,
+          }
+        : {
+            type: 'prompt',
+            prompt,
+            voice,
+            userProfile: userProfileRef.current,
+          };
 
       ws.send(JSON.stringify(payload));
       return;
@@ -1190,7 +1296,13 @@ export default function App() {
       const res = await fetch('http://localhost:3001/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, audioBase64, mimeType, voice }),
+        body: JSON.stringify({
+          prompt,
+          audioBase64,
+          mimeType,
+          voice,
+          userProfile: userProfileRef.current,
+        }),
       });
 
       if (!res.ok) {
@@ -1230,6 +1342,26 @@ export default function App() {
   useEffect(() => {
     handleAskGeminiRef.current = handleAskGemini;
   }, [handleAskGemini]);
+
+  // Save User Profile to localStorage and greet user warmly by name
+  const handleSaveProfile = useCallback((profile) => {
+    setUserProfile(profile);
+    userProfileRef.current = profile;
+    try {
+      localStorage.setItem('kindy_user_profile', JSON.stringify(profile));
+    } catch (e) {
+      console.warn('Failed to save profile to localStorage:', e);
+    }
+    setIsProfileModalOpen(false);
+
+    // Kindy welcomes user personally by their name!
+    express({
+      emotion: 'cheerful',
+      gesture: 'say_hi',
+      text: `[cheerful, say_hi] Wonderful to meet you, ${profile.name}! I am Kindy! [excited, hands_up] I am so excited to explore, talk, and learn together with you! [calm, hands_down]`,
+      speak: false,
+    });
+  }, []);
 
   // Wave hand and say Hi (visual only)
   const handleSayHi = () => {
@@ -1318,7 +1450,20 @@ export default function App() {
           </button>
         )}
 
-
+        {/* User Profile Badge (Click to View/Edit Profile) */}
+        {userProfile?.name && (
+          <button
+            type="button"
+            className="user-profile-badge-btn"
+            onClick={() => setIsProfileModalOpen(true)}
+            title="Click to view or edit your profile"
+          >
+            <span className="user-profile-avatar-dot">
+              {userProfile.name.charAt(0).toUpperCase()}
+            </span>
+            <span>Hi, {userProfile.name}</span>
+          </button>
+        )}
 
         {micNotice && (
           <div className="mic-notice-badge" onClick={toggleMute}>
@@ -1326,6 +1471,21 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* Interactive Tool Calling Screen HUD (Active only when tools are running) */}
+      {activeTool && (
+        <InteractiveToolHUD
+          activeTool={activeTool}
+          onClose={() => {
+            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
+            setIsMapMode(false);
+            setIsTypingMode(false);
+            setActiveTool(null);
+          }}
+          selectedWaypointIdx={selectedWaypointIdx}
+          onSelectWaypoint={(idx) => setSelectedWaypointIdx(idx)}
+        />
+      )}
 
       {/* Main Full Character Area */}
       <div className="avatar-main-hero">
@@ -1382,11 +1542,19 @@ export default function App() {
                 skinColor={config.faceColor}
                 shirtColor={config.shirtColor}
                 isTalking={isTalking}
+                activeQuery={activeTool?.query}
+                selectedWaypointIdx={selectedWaypointIdx}
+                onSelectWaypoint={setSelectedWaypointIdx}
               />
             )}
 
             {/* Laptop Overlay for Typing Mode (Straight, High-Tech Glyph Matrix Screen) */}
-            {isTypingMode && <LaptopOverlay isTalking={isTalking} />}
+            {isTypingMode && (
+              <LaptopOverlay
+                isTalking={isTalking}
+                activeQuery={activeTool?.query}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -1407,22 +1575,14 @@ export default function App() {
         onToggleMute={toggleMute}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
-        isMapMode={isMapMode}
-        onToggleMap={() => {
-          setIsMapMode((prev) => {
-            const next = !prev;
-            if (next) setIsTypingMode(false);
-            return next;
-          });
-        }}
-        isTypingMode={isTypingMode}
-        onToggleTyping={() => {
-          setIsTypingMode((prev) => {
-            const next = !prev;
-            if (next) setIsMapMode(false);
-            return next;
-          });
-        }}
+      />
+
+      {/* User Onboarding & Profile Modal (Saved to localStorage permanently) */}
+      <UserProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        onSave={handleSaveProfile}
+        initialProfile={userProfile}
       />
     </div>
   );
@@ -1436,10 +1596,6 @@ const ControlsDock = memo(function ControlsDock({
   onToggleMute,
   isFullscreen,
   onToggleFullscreen,
-  isMapMode,
-  onToggleMap,
-  isTypingMode,
-  onToggleTyping,
 }) {
   return (
     <div className="floating-controls-dock" role="toolbar" aria-label="Controls">
@@ -1455,7 +1611,7 @@ const ControlsDock = memo(function ControlsDock({
         <span className="dock-shortcut">B</span>
       </button>
 
-      {/* 3. Mute / Mic Button */}
+      {/* 2. Mute / Mic Button */}
       <button
         type="button"
         className={`dock-control-btn mic-toggle-btn ${isMuted ? 'muted' : 'active'}`}
@@ -1477,31 +1633,7 @@ const ControlsDock = memo(function ControlsDock({
         <span className="dock-shortcut">M</span>
       </button>
 
-      {/* Google Map Mode Button */}
-      <button
-        type="button"
-        className={`dock-control-btn map-toggle-btn ${isMapMode ? 'active' : ''}`}
-        onClick={onToggleMap}
-        title="Toggle Google Maps Mode"
-        style={isMapMode ? { background: '#e6f4ea', color: '#137333', fontWeight: 'bold' } : {}}
-      >
-        <Compass size={19} className="dock-icon" />
-        <span>Google Maps</span>
-      </button>
-
-      {/* Search / Laptop Mode Button */}
-      <button
-        type="button"
-        className={`dock-control-btn typing-toggle-btn ${isTypingMode ? 'active' : ''}`}
-        onClick={onToggleTyping}
-        title="Toggle Search Laptop Mode"
-        style={isTypingMode ? { background: '#e8f0fe', color: '#1a73e8', fontWeight: 'bold' } : {}}
-      >
-        <Laptop size={19} className="dock-icon" />
-        <span>Search Mode</span>
-      </button>
-
-      {/* 4. Fullscreen Button */}
+      {/* 3. Fullscreen Button */}
       <button
         type="button"
         className="dock-control-btn fullscreen-btn"

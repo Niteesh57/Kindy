@@ -1,7 +1,19 @@
 import React, { useState, useEffect } from 'react';
 
 // Google Maps inspection waypoints (Real-world clean locations)
-const GOOGLE_MAP_WAYPOINTS = [
+export const GOOGLE_MAP_WAYPOINTS = [
+  {
+    name: 'Ferry Building Artisan Coffee',
+    category: 'Marketplace Cafe · 4.9 ★',
+    query: 'Coffee shops near Ferry Building, San Francisco',
+    status: 'Open now · Grounded via Google Maps API',
+    x: 260,
+    y: 85,
+    type: 'coffee',
+    tag: 'OPEN NOW',
+    tagColor: '#137333',
+    tagBg: '#e6f4ea',
+  },
   {
     name: 'Central Park Woodlands',
     category: 'Public Park · 4.8 ★',
@@ -10,7 +22,7 @@ const GOOGLE_MAP_WAYPOINTS = [
     x: 120,
     y: 100,
     type: 'park',
-    tag: 'OPEN NOW',
+    tag: 'SCENIC',
     tagColor: '#137333',
     tagBg: '#e6f4ea',
   },
@@ -68,18 +80,27 @@ export default function MapOverlay({
   skinColor = '#F9C9B6',
   shirtColor = '#6366f1',
   isTalking = false,
+  activeQuery = '',
+  selectedWaypointIdx,
+  onSelectWaypoint,
 }) {
-  const [waypointIdx, setWaypointIdx] = useState(0);
+  const [internalIdx, setInternalIdx] = useState(0);
 
-  // Smoothly move the magnifying glass between clue areas every 3.2 seconds
+  const waypointIdx =
+    selectedWaypointIdx !== undefined ? selectedWaypointIdx : internalIdx;
+
+  // Smoothly move the magnifying glass between clue areas every 3.4 seconds if not explicitly controlled
   useEffect(() => {
+    if (selectedWaypointIdx !== undefined) return;
     const timer = setInterval(() => {
-      setWaypointIdx((prev) => (prev + 1) % GOOGLE_MAP_WAYPOINTS.length);
-    }, 3200);
+      setInternalIdx((prev) => (prev + 1) % GOOGLE_MAP_WAYPOINTS.length);
+    }, 3400);
     return () => clearInterval(timer);
-  }, []);
+  }, [selectedWaypointIdx]);
 
-  const current = GOOGLE_MAP_WAYPOINTS[waypointIdx];
+  const current =
+    GOOGLE_MAP_WAYPOINTS[waypointIdx % GOOGLE_MAP_WAYPOINTS.length] ||
+    GOOGLE_MAP_WAYPOINTS[0];
   const lensX = current.x;
   const lensY = current.y;
 
@@ -371,7 +392,7 @@ export default function MapOverlay({
             </g>
             {/* Search Query Text */}
             <text x="26" y="13" fill="#3c4043" fontSize="7" fontWeight="500" fontFamily="system-ui, -apple-system, sans-serif">
-              {current.query}
+              {activeQuery ? (activeQuery.length > 38 ? activeQuery.slice(0, 38) + '...' : activeQuery) : current.query}
             </text>
             {/* Mic Icon indicator */}
             <circle cx="236" cy="10" r="3" fill="#ea4335" opacity="0.8" />
