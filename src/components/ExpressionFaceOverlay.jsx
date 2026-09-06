@@ -65,7 +65,8 @@ export default function ExpressionFaceOverlay({
   ]);
 
   const isAngry = hasTag([
-    'angry', 'furious', 'annoyed', 'frustrated', 'irritated'
+    'angry', 'furious', 'annoyed', 'frustrated', 'irritated',
+    'serious', 'seriously', 'stern', 'firm', 'benchmark', 'fierce'
   ]);
 
   const isAfraid = hasTag([

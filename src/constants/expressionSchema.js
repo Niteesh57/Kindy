@@ -102,6 +102,14 @@ export const EXPRESSION_SCHEMA = {
       gesture: 'rest',
       voice: { pitch: 0.8, rate: 1.25, volume: 1.0 },
     },
+    serious: {
+      label: 'Serious (Benchmarking)',
+      emoji: '🧐',
+      face: { eyeStyle: 'circle', mouthStyle: 'peace' },
+      headClass: 'head-gentle-nod',
+      gesture: 'hands_down',
+      voice: { pitch: 0.9, rate: 0.95, volume: 1.0 },
+    },
     afraid: {
       label: 'Afraid',
       emoji: '😨',
@@ -516,36 +524,3 @@ export const EXPRESSION_SCHEMA = {
   },
 };
 
-// PRESET MULTI-TAG DEMO SCENARIOS
-export const PRESET_SCENARIOS = [
-  {
-    title: 'Thinking ➔ Realizing',
-    tag: 'Thought Cloud + Lightbulb',
-    text: '[thinking, thinking_pose] Hmm, let me work through that... [realizing, excitedly, say_hi] Ah! I see exactly what happened!',
-  },
-  {
-    title: 'Hands Up Celebration',
-    tag: 'Both Hands Up 🙌',
-    text: '[cheerful, hands_up] Hey! Two hands up! We finally did it and it looks absolutely amazing!',
-  },
-  {
-    title: 'Say Hi (Right Wave)',
-    tag: 'One Hand Up 🙋‍♂️',
-    text: '[cheerful, say_hi] Hi there! It is wonderful to meet you today! 👋',
-  },
-  {
-    title: 'Unsure & Curious',
-    tag: 'Question Mark ❓',
-    text: '[unsure, thinking] Hmm... I am not entirely sure about that, let me double check.',
-  },
-  {
-    title: 'Playful & Joyful',
-    tag: 'Musical Notes 🎶',
-    text: '[playful, cheer] Tra-la-la! Having so much fun with all these expressions and gestures!',
-  },
-  {
-    title: 'Hands Down & Calm',
-    tag: 'Relaxed Pose 🧘',
-    text: '[calm, hands_down] Take a relaxed breath. Both hands resting peacefully down.',
-  },
-];

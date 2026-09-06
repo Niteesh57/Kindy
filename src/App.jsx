@@ -1,34 +1,48 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
-import Avatar, { genConfig } from 'react-nice-avatar';
-import confetti from 'canvas-confetti';
+import Avatar from 'react-nice-avatar';
 import {
-  Dices,
   Maximize2,
   Minimize2,
   Palette,
   Mic,
   MicOff,
   Sparkles,
-  Laptop,
-  Compass,
-  Search,
 } from 'lucide-react';
 import WavingHand from './components/WavingHand';
 import ExpressionFaceOverlay from './components/ExpressionFaceOverlay';
-import ExpressionPlayground from './components/ExpressionPlayground';
 import LaptopOverlay from './components/LaptopOverlay';
 import MapOverlay from './components/MapOverlay';
-import InteractiveToolHUD from './components/InteractiveToolHUD';
 import UserProfileModal from './components/UserProfileModal';
 import ActionCard from './components/ActionCard';
 import {
-  COFFEE_MAP_CARDS,
-  MOTIVATION_VOLUNTEER_CARDS,
   buildCardsFromGrounding,
   formatLLMCards,
 } from './constants/actionCardsData';
 import { parseExpressionText, mergeTags } from './utils/expressionParser';
 import hark from 'hark';
+
+/**
+ * Strips all card JSON tags [cards: [...]], clear directives, stage tags, and residual JSON/URL fragments
+ * to produce clean spoken text for the subtitle ticker and speech bubble.
+ */
+function stripCardsAndTags(text) {
+  if (!text) return '';
+  let cleaned = text;
+  // 1. Remove complete [cards: [...]] even if multi-line or nested
+  cleaned = cleaned.replace(/\[cards:\s*\[[\s\S]*?\]\s*\]/gi, '');
+  // 2. Remove in-progress or trailing [cards: ...
+  cleaned = cleaned.replace(/\[cards:[\s\S]*$/gi, '');
+  // 3. Remove [clear_cards] directive
+  cleaned = cleaned.replace(/\[clear_cards\]/gi, '');
+  // 4. Remove stage/expression tags [cheerful, say_hi], etc.
+  cleaned = cleaned.replace(/\[.*?\]/g, '');
+  // 5. Remove unclosed trailing bracket [thinking...
+  cleaned = cleaned.replace(/\[[^\]]*$/, '');
+  // 6. Strip any residual JSON chunks or raw URLs if somehow present
+  cleaned = cleaned.replace(/\{[^{}]*\}/g, '');
+  cleaned = cleaned.replace(/https?:\/\/\S+/gi, '');
+  return cleaned.trim();
+}
 import {
   FACE_COLORS,
   HAIR_COLORS,
@@ -162,9 +176,7 @@ export default function App() {
   });
   const [currentBg, setCurrentBg] = useState(() => VIBRANT_BACKGROUNDS[0]);
   const [isBouncing, setIsBouncing] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isTypingMode, setIsTypingMode] = useState(false);
   const [isMapMode, setIsMapMode] = useState(false);
   const [activeTool, setActiveTool] = useState(null);
@@ -195,6 +207,23 @@ export default function App() {
     userProfileRef.current = userProfile;
   }, [userProfile]);
 
+  // Persistent Session Conversation Memory (Stored in sessionStorage across turns)
+  const [conversationHistory, setConversationHistory] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('kindy_session_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const conversationHistoryRef = useRef(conversationHistory);
+  useEffect(() => {
+    conversationHistoryRef.current = conversationHistory;
+    try {
+      sessionStorage.setItem('kindy_session_history', JSON.stringify(conversationHistory));
+    } catch (e) {}
+  }, [conversationHistory]);
+
   // Expression & Speech State
   const [isTalking, setIsTalking] = useState(false);
   const [isWaving, setIsWaving] = useState(false);
@@ -221,11 +250,7 @@ export default function App() {
   const [userSpeechText, setUserSpeechText] = useState('');
   const [micNotice, setMicNotice] = useState('');
 
-  const wsRef = useRef(null);
   const talkingIntervalRef = useRef(null);
-  const recognitionRef = useRef(null);
-  const speechTimeoutRef = useRef(null);
-  const restartTimerRef = useRef(null);
   const startListeningRef = useRef(null);
   const handleAskGeminiRef = useRef(null);
   const isMutedRef = useRef(false);
@@ -251,8 +276,14 @@ export default function App() {
   const audioElementRef = useRef(null);
   const audioSourceNodeRef = useRef(null);
   const expressionTimersRef = useRef([]);
+  const speechRecRef = useRef(null);
+  const userSpeechTextRef = useRef('');
 
   // Keep refs in sync for speech callbacks
+  useEffect(() => {
+    userSpeechTextRef.current = userSpeechText;
+  }, [userSpeechText]);
+
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
@@ -280,8 +311,14 @@ export default function App() {
     setCurrentBg((prevBg) => pickRandom(VIBRANT_BACKGROUNDS.filter((b) => b.id !== prevBg.id)));
   }, []);
 
-  // Cleanly stop voice recording and hark VAD listeners
+  // Cleanly stop voice recording, speech recognition, and hark VAD listeners
   const stopVoiceCapture = useCallback(() => {
+    if (speechRecRef.current) {
+      try {
+        speechRecRef.current.stop();
+      } catch (e) {}
+      speechRecRef.current = null;
+    }
     if (harkInstanceRef.current) {
       try {
         harkInstanceRef.current.stop();
@@ -304,7 +341,7 @@ export default function App() {
     setIsListening(false);
   }, []);
 
-  // Direct Voice Hearing Capture Manager (Audio-to-Audio pipeline with hark VAD)
+  // Direct Voice Hearing Capture Manager (Audio-to-Audio pipeline with hark VAD and Speech Recognition)
   const startListening = useCallback(async () => {
     // Don't restart if already listening or if muted
     if (isListeningRef.current) return;
@@ -353,7 +390,35 @@ export default function App() {
         harkInstanceRef.current = null;
       }
 
-      // 3. Initialize Hark VAD (Specialized WebRTC Voice Activity Detection)
+      // 3. Initialize real-time SpeechRecognition for live captions and query transcription
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition && !speechRecRef.current) {
+        try {
+          const rec = new SpeechRecognition();
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.lang = 'en-US';
+          rec.onresult = (e) => {
+            let fullText = '';
+            for (let i = 0; i < e.results.length; i++) {
+              fullText += e.results[i][0].transcript;
+            }
+            if (fullText.trim()) {
+              setUserSpeechText(fullText.trim());
+              userSpeechTextRef.current = fullText.trim();
+            }
+          };
+          rec.onerror = (err) => {
+            console.log('SpeechRecognition note:', err.error);
+          };
+          rec.start();
+          speechRecRef.current = rec;
+        } catch (e) {
+          console.log('SpeechRecognition init note:', e);
+        }
+      }
+
+      // 4. Initialize Hark VAD (Specialized WebRTC Voice Activity Detection)
       // Threshold: -38 dB. Normal human speech is -30dB to -15dB.
       // Ambient fan/AC noise and room rumble are -65dB to -50dB and will be completely filtered out!
       const speechEvents = hark(stream, {
@@ -417,8 +482,10 @@ export default function App() {
                     reader.onloadend = () => {
                       const base64Data = reader.result;
                       if (base64Data && handleAskGeminiRef.current) {
-                        console.log('[Hark VAD] Sending verified voice to Gemini...');
+                        const recognizedText = userSpeechTextRef.current || '';
+                        console.log('[Hark VAD] Sending verified voice to Gemini (text:', recognizedText, ')...');
                         handleAskGeminiRef.current({
+                          prompt: recognizedText || undefined,
                           audioBase64: base64Data,
                           mimeType: audioBlob.type,
                         });
@@ -568,17 +635,6 @@ export default function App() {
     return () => {
       window.removeEventListener('click', handleFirstUserInteraction);
       window.removeEventListener('keydown', handleFirstUserInteraction);
-      if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
-      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onstart = null;
-          recognitionRef.current.onend = null;
-          recognitionRef.current.onerror = null;
-          recognitionRef.current.onresult = null;
-          recognitionRef.current.stop();
-        } catch (e) {}
-      }
     };
   }, [startListening]);
 
@@ -880,7 +936,16 @@ export default function App() {
       setLeftHand(null);
       setRightHand(null);
 
-      const cleanText = rawText.replace(/\[.*?\]/g, '').trim();
+      // Dismiss laptop and map overlays immediately so Kindy's full face and gestures are visible
+      setIsMapMode(false);
+      setIsTypingMode(false);
+      setActiveTool(null);
+      if (toolDismissTimerRef.current) {
+        clearTimeout(toolDismissTimerRef.current);
+        toolDismissTimerRef.current = null;
+      }
+
+      const cleanText = stripCardsAndTags(rawText);
       setSpeechBubbleText(cleanText);
       setCurrentSpokenText(cleanText);
 
@@ -908,14 +973,13 @@ export default function App() {
         setLeftHand('down');
         setRightHand('down');
         setIsWaving(false);
-
-        // Allow user 8 seconds to view & interact with the tool results before smoothly returning to rest
-        if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
-        toolDismissTimerRef.current = setTimeout(() => {
-          setIsMapMode(false);
-          setIsTypingMode(false);
-          setActiveTool(null);
-        }, 8000);
+        setIsMapMode(false);
+        setIsTypingMode(false);
+        setActiveTool(null);
+        if (toolDismissTimerRef.current) {
+          clearTimeout(toolDismissTimerRef.current);
+          toolDismissTimerRef.current = null;
+        }
 
         setTimeout(() => {
           setSpeechBubbleText('');
@@ -1159,12 +1223,20 @@ export default function App() {
       toolDismissTimerRef.current = null;
     }
 
+    // Track user turn in persistent conversation history
+    const userText = (typeof prompt === 'string' && prompt.trim())
+      ? prompt
+      : (userSpeechTextRef.current || userSpeechText || 'Voice message');
+    const updatedHistory = [...conversationHistoryRef.current, { role: 'user', content: userText }];
+    setConversationHistory(updatedHistory);
+    conversationHistoryRef.current = updatedHistory;
+
     // Instant tool pre-activation from prompt/speech
-    const initialQuery = typeof prompt === 'string' ? prompt : userSpeechText || '';
+    const initialQuery = typeof prompt === 'string' ? prompt : (userSpeechTextRef.current || userSpeechText || '');
     if (initialQuery) {
       const lower = initialQuery.toLowerCase();
-      const isMaps = /\b(map|maps|location|locations|place|places|directions?|route|routes|near|nearby|where is|navigate|address|ferry building|san francisco|city|park|coffee|cafe|restaurant|hotel|museum)\b/i.test(lower);
-      const isSearch = /\b(search|find|google|look up|what is|who is|when is|where did|why does|how many|latest|recent|news|weather|price of)\b/i.test(lower);
+      const isMaps = /\b(map|maps|location|locations|place|places|directions?|route|routes|near|nearby|where is|navigate|address|city|town|park|parks|coffee|cafe|restaurant|hotel|museum|ngo|volunteer|center|foundation|community|library|shelter|venue|where to go|go there|visit|head over|there)\b/i.test(lower);
+      const isSearch = /\b(search|find|google|look up|what is|who is|when is|where did|why does|how many|latest|recent|news|weather|price of|opportunities|volunteer|ngo|connect|initiative|impact|participate|teach|mentor)\b/i.test(lower);
       if (isMaps) {
         setIsMapMode(true);
         setIsTypingMode(false);
@@ -1242,7 +1314,7 @@ export default function App() {
               setActiveTool({
                 tool: 'google_maps',
                 name: 'Google Maps Tool',
-                query: msg.query || initialQuery || 'Coffee shops near Ferry Building, San Francisco',
+                query: msg.query || initialQuery || 'Places to connect and volunteer',
                 status: msg.status || 'Grounding geospatial data with Google Maps',
               });
             } else if (msg.tool === 'google_search') {
@@ -1255,8 +1327,18 @@ export default function App() {
                 status: msg.status || 'Live Google Web Search Grounding',
               });
             }
+          } else if (msg.type === 'search_complete') {
+            console.log('⚡ [Client] Search completed — removing tool overlay immediately');
+            setIsMapMode(false);
+            setIsTypingMode(false);
+            setActiveTool(null);
+            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
           } else if (msg.type === 'cards') {
             console.log('🎴 [Client] Received LLM-decided recommendation cards:', msg.cards?.length);
+            setIsMapMode(false);
+            setIsTypingMode(false);
+            setActiveTool(null);
+            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
             if (msg.cards && msg.cards.length > 0) {
               const formattedCards = formatLLMCards(msg.cards);
               if (formattedCards && formattedCards.length > 0) {
@@ -1271,6 +1353,10 @@ export default function App() {
             setActiveCardId(null);
           } else if (msg.type === 'grounding_sources') {
             console.log('📍 [Client] Received grounding sources from Gemini:', msg.sources?.length);
+            setIsMapMode(false);
+            setIsTypingMode(false);
+            setActiveTool(null);
+            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
             if (msg.sources && msg.sources.length > 0) {
               const dynamicCards = buildCardsFromGrounding(msg.sources);
               if (dynamicCards && dynamicCards.length > 0) {
@@ -1279,10 +1365,16 @@ export default function App() {
               }
             }
           } else if (msg.type === 'chunk') {
+            // As soon as spoken tokens begin streaming, dismiss any remaining search overlay
+            setIsMapMode(false);
+            setIsTypingMode(false);
+            setActiveTool(null);
+            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
+
             // Keep timeout alive while tokens are actively streaming
             setSafetyTimeout(40000);
             accumulated = msg.accumulated || (accumulated + msg.text);
-            const cleanText = accumulated.replace(/\[.*?\]/g, '').trim();
+            const cleanText = stripCardsAndTags(accumulated);
             setSpeechBubbleText(cleanText);
 
             if (!hasTriggeredEmotion && accumulated.includes('[')) {
@@ -1311,6 +1403,14 @@ export default function App() {
             setIsGeminiLoading(false);
             isGeminiLoadingRef.current = false;
             setUserSpeechText('');
+            userSpeechTextRef.current = '';
+
+            // Record assistant turn in persistent conversation history
+            const assistantSpeech = stripCardsAndTags(accumulated) || 'I am happy to guide you!';
+            const finalHistory = [...conversationHistoryRef.current, { role: 'assistant', content: assistantSpeech }];
+            setConversationHistory(finalHistory);
+            conversationHistoryRef.current = finalHistory;
+
             if (msg.audioBase64) {
               playGeminiAudio(msg.audioBase64, msg.mimeType || 'audio/wav', accumulated);
             }
@@ -1320,6 +1420,7 @@ export default function App() {
             setIsGeminiLoading(false);
             isGeminiLoadingRef.current = false;
             setUserSpeechText('');
+            userSpeechTextRef.current = '';
           } else if (msg.type === 'error') {
             if (safetyTimer) clearTimeout(safetyTimer);
             if (window.__KINDY_WS_LISTENERS__) {
@@ -1328,6 +1429,7 @@ export default function App() {
             setIsGeminiLoading(false);
             isGeminiLoadingRef.current = false;
             setUserSpeechText('');
+            userSpeechTextRef.current = '';
             express({
               emotion: 'confused',
               text: "Sorry, I couldn't hear that properly. Could you say that again?",
@@ -1351,12 +1453,14 @@ export default function App() {
             mimeType: mimeType || 'audio/webm',
             voice,
             userProfile: userProfileRef.current,
+            history: updatedHistory.slice(-14),
           }
         : {
             type: 'prompt',
             prompt,
             voice,
             userProfile: userProfileRef.current,
+            history: updatedHistory.slice(-14),
           };
 
       ws.send(JSON.stringify(payload));
@@ -1374,6 +1478,7 @@ export default function App() {
           mimeType,
           voice,
           userProfile: userProfileRef.current,
+          history: updatedHistory.slice(-14),
         }),
       });
 
@@ -1388,6 +1493,11 @@ export default function App() {
       isGeminiLoadingRef.current = false;
       setUserSpeechText('');
 
+      const assistantSpeech = stripCardsAndTags(text) || 'I am happy to guide you!';
+      const finalHistory = [...conversationHistoryRef.current, { role: 'assistant', content: assistantSpeech }];
+      setConversationHistory(finalHistory);
+      conversationHistoryRef.current = finalHistory;
+
       if (audio) {
         playGeminiAudio(audio, responseMime, text);
       } else {
@@ -1401,7 +1511,7 @@ export default function App() {
       express({
         emotion: 'confused',
         gesture: 'hands_down',
-        text: "I couldn't connect to my AI brain just now. Please try again in a second!",
+        text: "I'm having trouble connecting right now. Let's try again in a moment!",
         speak: false,
       });
       if (!isMutedRef.current && document.visibilityState !== 'hidden') {
@@ -1484,28 +1594,6 @@ export default function App() {
     });
   };
 
-  const handleDownloadSVG = () => {
-    const svgEl = document.querySelector('#avatar-center-wrapper svg');
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
-    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-    const svgUrl = URL.createObjectURL(svgBlob);
-    const link = document.createElement('a');
-    link.href = svgUrl;
-    link.download = `avatar-${config.sex}-${Date.now()}.svg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(svgUrl);
-  };
-
-  const handleCopyJSX = () => {
-    const code = `<Avatar\n  style={{ width: '12rem', height: '12rem' }}\n  {...${JSON.stringify(config, null, 2)}}\n/>`;
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
     <div
       className="full-screen-stage"
@@ -1580,21 +1668,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      {/* Interactive Tool Calling Screen HUD (Active only when tools are running) */}
-      {activeTool && (
-        <InteractiveToolHUD
-          activeTool={activeTool}
-          onClose={() => {
-            if (toolDismissTimerRef.current) clearTimeout(toolDismissTimerRef.current);
-            setIsMapMode(false);
-            setIsTypingMode(false);
-            setActiveTool(null);
-          }}
-          selectedWaypointIdx={selectedWaypointIdx}
-          onSelectWaypoint={(idx) => setSelectedWaypointIdx(idx)}
-        />
-      )}
 
       {/* Main Full Character Area with Dynamic Actionable Cards (Rendered ONLY when LLM gives cards) */}
       <div className={`avatar-main-hero ${hasCards ? 'has-side-cards' : 'no-side-cards'}`}>

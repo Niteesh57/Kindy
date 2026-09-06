@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { stripCardsAndTags } from './agent.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -117,12 +118,8 @@ export async function synthesizeSpeech(text, options = {}) {
     return null;
   }
 
-  // Strip stage tags so TTS only speaks natural dialogue
-  let cleanSpoken = text || '';
-  cleanSpoken = cleanSpoken.replace(/\[.*?\]/g, ''); // strip [cheerful, say_hi]
-  cleanSpoken = cleanSpoken.replace(/\[[^\]]*$/, ''); // strip unclosed trailing [thinking...
-  cleanSpoken = cleanSpoken.trim();
-
+  // Strip all card JSON payloads, bracketed stage tags, and URL remnants so TTS only speaks pure dialogue
+  const cleanSpoken = stripCardsAndTags(text);
   const spokenText = cleanSpoken || (text && !text.startsWith('[') ? text.trim() : 'Hello! I am Kindy.');
 
   if (!spokenText || spokenText.length < 2) {

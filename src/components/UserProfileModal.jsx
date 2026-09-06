@@ -259,7 +259,7 @@ export default function UserProfileModal({ isOpen, onClose, onSave, initialProfi
               id="user-location-input"
               type="text"
               className="profile-text-input"
-              placeholder="e.g. San Francisco, California or Hyderabad..."
+              placeholder="e.g. City, State, or Region..."
               value={location}
               onChange={(e) => setLocation(e.target.value)}
             />

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, Star, MapPin, Sparkles, HeartHandshake, Coffee, Briefcase, Award } from 'lucide-react';
+import { ExternalLink, Star, MapPin, Sparkles, TrendingUp, AlertTriangle } from 'lucide-react';
 
 export default function ActionCard({
   card,
@@ -16,11 +16,13 @@ export default function ActionCard({
     }
   };
 
+  const isNegative = card.impactType === 'negative';
+
   return (
     <div
       className={`motivation-action-card ${isBestPick ? 'best-pick-card' : ''} ${
         isActive ? 'card-speaking-highlight' : ''
-      }`}
+      } ${isNegative ? 'negative-impact-card' : ''}`}
       onClick={onClick}
       role="button"
       tabIndex={0}
@@ -40,8 +42,19 @@ export default function ActionCard({
             <span>BEST PICK</span>
           </span>
         ) : (
-          <span className="card-badge regular-badge" style={card.badgeStyle || {}}>
-            {card.badge || 'RECOMMENDED'}
+          <span
+            className={`card-badge ${isNegative ? 'negative-badge' : 'regular-badge'}`}
+            style={card.badgeStyle || {}}
+          >
+            {isNegative && <AlertTriangle size={11} className="badge-icon-alert" />}
+            <span>{card.badge || 'IMPACT'}</span>
+          </span>
+        )}
+
+        {card.stat && (
+          <span className={`card-stat-pill ${isNegative ? 'stat-pill-negative' : 'stat-pill-positive'}`}>
+            {!isNegative && <TrendingUp size={11} className="stat-icon-trend" />}
+            <span>{card.stat}</span>
           </span>
         )}
 
@@ -56,7 +69,7 @@ export default function ActionCard({
       {/* Title & Place/Category */}
       <div className="card-main-content">
         <h4 className="card-title">
-          <span className="card-emoji-icon">{card.icon || '📍'}</span>
+          <span className="card-emoji-icon">{card.icon || (isNegative ? '⚠️' : '💡')}</span>
           <span className="card-title-text">{card.title}</span>
         </h4>
         {card.category && (
@@ -67,27 +80,39 @@ export default function ActionCard({
         )}
       </div>
 
-      {/* Motivational Hook / Story Description */}
+      {/* Motivational Hook / Story / Consequence Description */}
       {card.description && (
         <p className="card-description-text">{card.description}</p>
       )}
 
-      {/* Bottom Action Row: External Link / Click hint */}
+      {/* Bottom Action Row: External Link OR Interactive Discussion Button */}
       <div className="card-footer-row">
         {card.url ? (
           <button
             type="button"
             className="card-link-action-btn"
             onClick={handleExternalClick}
-            title="Open in Google Maps / Google Search"
+            title="Open verified destination"
           >
-            <span>Open in Maps</span>
+            <span>{card.url.includes('maps') ? 'Open in Maps' : 'Visit Link'}</span>
             <ExternalLink size={12} className="external-arrow-icon" />
           </button>
         ) : (
-          <span className="card-click-prompt">Click to ask Kindy ↗</span>
+          <button
+            type="button"
+            className="card-action-prompt-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick && onClick();
+            }}
+            title="Click to ask Kindy about this"
+          >
+            <span>{card.actionPrompt || 'Explore impact ↗'}</span>
+            <Sparkles size={11} className="prompt-btn-sparkle" />
+          </button>
         )}
       </div>
     </div>
   );
 }
+

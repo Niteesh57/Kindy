@@ -3,9 +3,9 @@ import React, { useState, useEffect } from 'react';
 // Google Maps inspection waypoints (Real-world clean locations)
 export const GOOGLE_MAP_WAYPOINTS = [
   {
-    name: 'Ferry Building Artisan Coffee',
-    category: 'Marketplace Cafe · 4.9 ★',
-    query: 'Coffee shops near Ferry Building, San Francisco',
+    name: 'Community & Volunteer Center',
+    category: 'Community Hub · 4.9 ★',
+    query: 'Community and volunteer centers nearby',
     status: 'Open now · Grounded via Google Maps API',
     x: 260,
     y: 85,

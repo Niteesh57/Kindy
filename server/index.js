@@ -91,9 +91,9 @@ app.post('/api/chat', async (req, res) => {
 app.post('/api/interactions', async (req, res) => {
   try {
     const {
-      input = 'Find coffee shops near the Ferry Building in San Francisco that are open now.',
-      latitude = 37.7955,
-      longitude = -122.3937,
+      input = 'Find community volunteer centers nearby that are open now.',
+      latitude = 37.7749,
+      longitude = -122.4194,
       voice = 'Zephyr',
     } = req.body;
 
@@ -156,15 +156,18 @@ wss.on('connection', (ws) => {
       const isPromptInput = type === 'prompt' && prompt;
 
       if (isAudioInput || isPromptInput) {
+        console.log(`[Server] Received ${isAudioInput ? 'audio' : 'prompt'} input (prompt: "${prompt || ''}", history turns: ${history?.length || 0})`);
+
         let accumulatedText = '';
         const inputPayload = isAudioInput
-          ? { audioBase64: audioBase64 || audio, mimeType: mimeType || 'audio/webm' }
+          ? { audioBase64: audioBase64 || audio, mimeType: mimeType || 'audio/webm', prompt }
           : prompt;
 
-        // Instant tool detection from prompt
-        const initialTool = isPromptInput ? detectToolIntent(prompt) : null;
+        // Instant tool detection from prompt or voice transcript
+        const toolQuery = prompt || (typeof inputPayload === 'string' ? inputPayload : '');
+        const initialTool = toolQuery ? detectToolIntent(toolQuery) : null;
         if (initialTool && ws.readyState === WebSocket.OPEN) {
-          console.log(`[Server] Instant tool call: ${initialTool.tool} for "${prompt}"`);
+          console.log(`[Server] Instant tool call: ${initialTool.tool} for "${toolQuery}"`);
           ws.send(
             JSON.stringify({
               type: 'tool_call',
@@ -240,6 +243,16 @@ wss.on('connection', (ws) => {
                 ws.send(
                   JSON.stringify({
                     type: 'clear_cards',
+                  })
+                );
+              }
+            },
+            onSearchComplete: () => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log('[Server] Search/tool execution complete. Emitting search_complete');
+                ws.send(
+                  JSON.stringify({
+                    type: 'search_complete',
                   })
                 );
               }
