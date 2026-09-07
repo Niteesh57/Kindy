@@ -22,7 +22,6 @@ import {
   formatLLMCards,
 } from './constants/actionCardsData';
 import { parseExpressionText, mergeTags } from './utils/expressionParser';
-import hark from 'hark';
 
 /**
  * Strips all card JSON tags [cards: [...]], clear directives, stage tags, and residual JSON/URL fragments
@@ -306,7 +305,7 @@ export default function App() {
   const isListeningRef = useRef(false);
   const isUserSpeakingRef = useRef(false);
 
-  // Direct Voice Hearing Capture refs (AudioContext + Analyser + MediaRecorder)
+  // Direct Voice Hearing Capture refs (MediaStream + MediaRecorder)
   const mediaStreamRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -315,7 +314,6 @@ export default function App() {
   const isRecordingSpeechRef = useRef(false);
   const vadAnimationRef = useRef(null);
   const silenceTimerRef = useRef(null);
-  const harkInstanceRef = useRef(null);
   // Real-time audio playback lip-sync analyser & animation frame
   const playbackAnalyserRef = useRef(null);
   const lipSyncRafRef = useRef(null);
@@ -358,28 +356,18 @@ export default function App() {
     setCurrentBg((prevBg) => pickRandom(VIBRANT_BACKGROUNDS.filter((b) => b.id !== prevBg.id)));
   }, []);
 
-  // Cleanly stop voice recording, speech recognition, and hark VAD listeners
+  // Cleanly stop voice recording and SpeechRecognition
   const stopVoiceCapture = useCallback(() => {
     if (speechRecRef.current) {
-      try {
-        speechRecRef.current.stop();
-      } catch (e) {}
+      try { speechRecRef.current.stop(); } catch (e) {}
       speechRecRef.current = null;
-    }
-    if (harkInstanceRef.current) {
-      try {
-        harkInstanceRef.current.stop();
-      } catch (e) {}
-      harkInstanceRef.current = null;
     }
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (e) {}
+      try { mediaRecorderRef.current.stop(); } catch (e) {}
     }
     isRecordingSpeechRef.current = false;
     isUserSpeakingRef.current = false;
@@ -388,219 +376,189 @@ export default function App() {
     setIsListening(false);
   }, []);
 
-  // Direct Voice Hearing Capture Manager (Audio-to-Audio pipeline with hark VAD and Speech Recognition)
+  // ─── Voice Capture using native SpeechRecognition VAD ───────────────────────
+  // Uses the browser's built-in speech activity detection (same engine as ChatGPT/Gemini voice)
+  // onspeechstart → start MediaRecorder
+  // onspeechend   → 2s buffer → stop MediaRecorder → send audio to backend
   const startListening = useCallback(async () => {
-    // Don't restart if already listening or if muted
     if (isListeningRef.current) return;
     if (isMutedRef.current) return;
     setMicNotice('');
 
     try {
-      // 1. Acquire microphone stream (reuse existing if still active and all tracks are live)
+      // 1. Acquire microphone stream (reuse if all tracks still live)
       let stream = mediaStreamRef.current;
       const tracksAlive = stream && stream.getTracks().length > 0 && stream.getTracks().every((t) => t.readyState === 'live');
       if (!stream || !stream.active || !tracksAlive) {
-        // Stop stale tracks to release old stream cleanly
-        if (stream) {
-          stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
-        }
+        if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            noiseCancellation: true,
             autoGainControl: true,
             channelCount: 1,
-            sampleRate: 16000,
           },
         });
         mediaStreamRef.current = stream;
       }
 
-      // Pre-warm and unlock AudioContext during mic activation so audio output can play seamlessly
+      // 2. Pre-warm AudioContext so TTS playback is always ready
       try {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
           audioContextRef.current = new AudioContextClass();
         }
-        if (audioContextRef.current.state === 'suspended') {
-          audioContextRef.current.resume();
-        }
-      } catch (audioCtxErr) {
-        console.warn('AudioContext pre-warm note:', audioCtxErr);
-      }
+        if (audioContextRef.current.state === 'suspended') audioContextRef.current.resume();
+      } catch (e) {}
 
       setIsListening(true);
       isListeningRef.current = true;
-      setMicNotice('');
 
-      // 2. Stop any existing hark VAD instance
-      if (harkInstanceRef.current) {
-        try {
-          harkInstanceRef.current.stop();
-        } catch (e) {}
-        harkInstanceRef.current = null;
-      }
-
-      // 3. Initialize real-time SpeechRecognition for live captions and query transcription
+      // 3. Start SpeechRecognition — its onspeechstart/onspeechend are the VAD
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition && !speechRecRef.current) {
-        try {
-          const rec = new SpeechRecognition();
-          rec.continuous = true;
-          rec.interimResults = true;
-          rec.lang = 'en-US';
-          rec.onresult = (e) => {
-            let fullText = '';
-            for (let i = 0; i < e.results.length; i++) {
-              fullText += e.results[i][0].transcript;
-            }
-            if (fullText.trim()) {
-              setUserSpeechText(fullText.trim());
-              userSpeechTextRef.current = fullText.trim();
-            }
-          };
-          rec.onerror = (err) => {
-            console.log('SpeechRecognition note:', err.error);
-            // Clear the ref so it can be re-initialized on next startListening call
-            if (err.error === 'aborted' || err.error === 'not-allowed' || err.error === 'service-not-allowed' || err.error === 'network') {
-              speechRecRef.current = null;
-            }
-          };
-          // CRITICAL: When the browser kills SpeechRecognition (e.g. tab switch, mic stolen by
-          // another tab), onend fires. Clear the ref so startListening() recreates it on return.
-          rec.onend = () => {
-            if (speechRecRef.current === rec) {
-              speechRecRef.current = null;
-            }
-          };
-          rec.start();
-          speechRecRef.current = rec;
-        } catch (e) {
-          console.log('SpeechRecognition init note:', e);
-        }
+      if (!SpeechRecognition) {
+        setMicNotice('Voice input not supported in this browser. Try Chrome.');
+        return;
       }
 
-      // 4. Initialize Hark VAD (Specialized WebRTC Voice Activity Detection)
-      // Threshold: -38 dB. Normal human speech is -30dB to -15dB.
-      // Ambient fan/AC noise and room rumble are -65dB to -50dB and will be completely filtered out!
-      const speechEvents = hark(stream, {
-        threshold: -38,
-        interval: 80,
-        play: false,
-      });
-      harkInstanceRef.current = speechEvents;
+      // Always create a fresh instance (cleared by onend/onerror)
+      if (speechRecRef.current) {
+        try { speechRecRef.current.stop(); } catch (e) {}
+        speechRecRef.current = null;
+      }
 
-      // When actual human voice is heard:
-      speechEvents.on('speaking', () => {
-        // Discard if Kindy is talking, Gemini is loading, or user is muted
-        if (
-          !isListeningRef.current ||
-          isMutedRef.current ||
-          isTalkingRef.current ||
-          isGeminiLoadingRef.current
-        ) {
-          return;
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+      rec.maxAlternatives = 1;
+
+      // Live caption text as the user speaks
+      rec.onresult = (e) => {
+        let fullText = '';
+        for (let i = 0; i < e.results.length; i++) {
+          fullText += e.results[i][0].transcript;
         }
+        if (fullText.trim()) {
+          setUserSpeechText(fullText.trim());
+          userSpeechTextRef.current = fullText.trim();
+        }
+      };
 
-        // Cancel the 2-second silence timer if user resumed speaking
+      // ── VAD: Speech STARTED — begin recording ──────────────────────────────
+      rec.onspeechstart = () => {
+        // Ignore if Kindy is talking, loading, or user is muted
+        if (!isListeningRef.current || isMutedRef.current || isTalkingRef.current || isGeminiLoadingRef.current) return;
+
+        // Cancel any pending silence timer (user resumed speaking)
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
           silenceTimerRef.current = null;
         }
 
-        // Start recording speech if not already recording
-        if (!isRecordingSpeechRef.current) {
-          console.log('[Hark VAD] Human speech detected (exceeds -38dB speech threshold). Starting capture...');
-          isRecordingSpeechRef.current = true;
-          isUserSpeakingRef.current = true;
-          setIsUserSpeaking(true);
-          audioChunksRef.current = [];
+        if (isRecordingSpeechRef.current) return; // already recording
 
-          let mimeType = 'audio/webm;codecs=opus';
-          if (typeof MediaRecorder !== 'undefined') {
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-              mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-            }
+        console.log('[VAD] Speech started — beginning MediaRecorder capture...');
+        isRecordingSpeechRef.current = true;
+        isUserSpeakingRef.current = true;
+        setIsUserSpeaking(true);
+        audioChunksRef.current = [];
 
-            try {
-              const recorder = new MediaRecorder(stream, { mimeType });
-              mediaRecorderRef.current = recorder;
-
-              recorder.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) {
-                  audioChunksRef.current.push(e.data);
-                }
-              };
-
-              recorder.onstop = () => {
-                const chunks = audioChunksRef.current;
-                if (chunks.length > 0) {
-                  const audioBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-                  console.log('[Hark VAD] Speech audio captured, size:', audioBlob.size, 'bytes');
-
-                  // Ensure meaningful voice audio length (>5.6KB ~ 800ms)
-                  if (audioBlob.size > 5600) {
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                      const base64Data = reader.result;
-                      if (base64Data && handleAskGeminiRef.current) {
-                        const recognizedText = userSpeechTextRef.current || '';
-                        console.log('[Hark VAD] Sending verified voice to Gemini (text:', recognizedText, ')...');
-                        handleAskGeminiRef.current({
-                          prompt: recognizedText || undefined,
-                          audioBase64: base64Data,
-                          mimeType: audioBlob.type,
-                        });
-                      }
-                    };
-                    reader.readAsDataURL(audioBlob);
-                  } else {
-                    console.log('[Hark VAD] Audio snippet too short/quiet, ignored.');
-                  }
-                }
-                audioChunksRef.current = [];
-              };
-
-              recorder.start(100);
-            } catch (recErr) {
-              console.warn('[Hark VAD] MediaRecorder error:', recErr);
-              isRecordingSpeechRef.current = false;
-              isUserSpeakingRef.current = false;
-              setIsUserSpeaking(false);
-            }
-          }
+        // Pick best supported MIME type
+        let mimeType = 'audio/webm;codecs=opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
         }
-      });
 
-      // When voice energy drops below threshold:
-      speechEvents.on('stopped_speaking', () => {
+        try {
+          const recorder = new MediaRecorder(stream, { mimeType });
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data);
+          };
+
+          recorder.onstop = () => {
+            const chunks = audioChunksRef.current;
+            if (chunks.length === 0) return;
+            const audioBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+            audioChunksRef.current = [];
+            console.log('[VAD] Audio captured, size:', audioBlob.size, 'bytes');
+
+            // Reject clips that are too short (< ~600ms)
+            if (audioBlob.size < 4000) {
+              console.log('[VAD] Clip too short, ignoring.');
+              return;
+            }
+
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (reader.result && handleAskGeminiRef.current) {
+                const text = userSpeechTextRef.current || '';
+                console.log('[VAD] Sending to Gemini (transcript:', text, ')');
+                handleAskGeminiRef.current({
+                  prompt: text || undefined,
+                  audioBase64: reader.result,
+                  mimeType: audioBlob.type,
+                });
+              }
+            };
+            reader.readAsDataURL(audioBlob);
+          };
+
+          recorder.start(100);
+        } catch (recErr) {
+          console.warn('[VAD] MediaRecorder error:', recErr);
+          isRecordingSpeechRef.current = false;
+          isUserSpeakingRef.current = false;
+          setIsUserSpeaking(false);
+        }
+      };
+
+      // ── VAD: Speech ENDED — wait 2s then finalize ─────────────────────────
+      rec.onspeechend = () => {
         if (!isRecordingSpeechRef.current) return;
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-        }
-
-        // Buffer time: wait 2000ms (2 full seconds) of silence before cutting off and sending to LLM
         silenceTimerRef.current = setTimeout(() => {
-          console.log('[Hark VAD] Silence threshold reached (2s buffer) — finalizing and sending to LLM...');
+          console.log('[VAD] 2s silence — finalizing and sending to backend...');
           isRecordingSpeechRef.current = false;
           isUserSpeakingRef.current = false;
           setIsUserSpeaking(false);
           silenceTimerRef.current = null;
-
           if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-            try {
-              mediaRecorderRef.current.stop();
-            } catch (e) {}
+            try { mediaRecorderRef.current.stop(); } catch (e) {}
           }
-        }, 2000); // 2s natural conversational pause buffer
-      });
+        }, 2000);
+      };
+
+      // Auto-restart recognition if the browser stops it (Chrome restarts every ~60s)
+      rec.onend = () => {
+        if (speechRecRef.current === rec) speechRecRef.current = null;
+        // Only restart if still in listening mode and not muted
+        if (isListeningRef.current && !isMutedRef.current && !isTalkingRef.current) {
+          setTimeout(() => {
+            if (isListeningRef.current && !isMutedRef.current) {
+              try { rec.start(); speechRecRef.current = rec; } catch (e) {}
+            }
+          }, 200);
+        }
+      };
+
+      rec.onerror = (err) => {
+        console.log('[VAD] SpeechRecognition error:', err.error);
+        if (speechRecRef.current === rec) speechRecRef.current = null;
+      };
+
+      rec.start();
+      speechRecRef.current = rec;
+      console.log('[VAD] SpeechRecognition started — listening for speech...');
+
     } catch (err) {
-      console.warn('Voice capture initialization error:', err);
+      console.warn('[VAD] Initialization error:', err);
       setIsListening(false);
       isListeningRef.current = false;
-      setMicNotice('Click mic icon to allow microphone permission');
+      setMicNotice('Click mic icon to allow microphone access');
     }
   }, []);
 
@@ -1064,10 +1022,10 @@ export default function App() {
         }, 6000);
 
         // Auto-resume microphone listening immediately after Kindy finishes speaking
-        // IMPORTANT: Fully tear down stale hark VAD + SpeechRecognition + MediaRecorder
+        // IMPORTANT: Fully tear down stale SpeechRecognition + MediaRecorder
         // before restarting, otherwise the old session blocks the new one from initializing.
         if (!isMutedRef.current && document.visibilityState !== 'hidden') {
-          stopVoiceCapture();  // clears hark, speechRec, mediaRecorder, resets all flags
+          stopVoiceCapture();  // clears speechRec, mediaRecorder, resets all flags
           setTimeout(() => {
             if (!isMutedRef.current && !isListeningRef.current) {
               startListeningRef.current?.();
