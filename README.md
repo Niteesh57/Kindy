@@ -40,7 +40,138 @@ Kindy is not a monotone chatbot. It embodies a **passionate comic well-wisher an
 
 ---
 
-## 🏗️ System Architecture
+## 🛠️ How I Built It
+
+I wanted Kindy to feel like a real conversation with an encouraging friend — not a dry chatbot. Here's what went into making that happen:
+
+---
+
+### 1. 🎭 The Avatar & Emotion Engine
+
+I built a fully custom 2D face overlay in React with pure SVG + CSS3 — no sprite sheets, no GIFs.
+
+The backend sends **emotion + gesture tags** embedded directly into the dialogue text:
+```
+[crying, hands_down] Oh no… [excited, wave_left] But look at these opportunities near you!
+```
+
+The `expressionParser.js` on the client reads these tokens, schedules facial transitions **synchronized with the TTS audio duration**, and drives the avatar live:
+
+| Emotion | What you see |
+|:---|:---|
+| `[crying]` | Anime-style watery eyes + tears streaming down + sad brow droop |
+| `[excited]` | Star eyes + bouncing head + raised eyebrows |
+| `[serious]` | Flat line mouth + heavy brows + direct gaze |
+| `[thinking]` | One eye narrowed + tilted head + hand on chin pose |
+| `[cheerful]` | Smile eyes + rosy cheeks + waving hand |
+
+---
+
+### 2. 🎙️ Real-Time Voice Without Any Buttons
+
+Instead of clicking "Record" for every turn, Kindy listens **continuously** using the browser's native `SpeechRecognition` API — the same engine that powers Chrome's voice input and Google Assistant.
+
+**How the pipeline works:**
+
+```
+You speak → onspeechstart fires → MediaRecorder begins capturing
+You pause → onspeechend fires → 2-second silence buffer starts
+2s passes → audio blob sent to server via WebSocket
+Server → Gemini 3.8 Flash (understands your voice directly)
+Server → Gemini TTS (streams audio back)
+Audio plays → avatar lip-syncs in real time
+Mic restarts → ready for your next message
+```
+
+The **2-second buffer** is key — it prevents Kindy from cutting you off mid-thought if you pause briefly between sentences.
+
+If you **switch browser tabs** and come back, the mic recovers automatically: existing `MediaStream` tracks are validated, stale instances are torn down, and a fresh `SpeechRecognition` session starts within 300ms.
+
+---
+
+### 3. 🌍 Grounding in the Real World
+
+General advice like *"go volunteer"* isn't useful. Kindy connects **Google Search** and **Google Maps** tools to Gemini so it can look up actual places near you:
+
+- 📍 Checks your city/location from your profile
+- 🔎 Queries Google Search for community orgs, hackathons, NGOs, libraries
+- 🗺️ Opens an interactive Google Maps overlay inside the UI with clickable waypoints
+- 📋 Shows **6 recommendation cards** on-screen with venue names, distances, and star ratings
+
+The grounding metadata (citations + map sources) streams back via WebSocket alongside the dialogue text — zero extra round-trips.
+
+---
+
+### 4. ⚡ No Request Blockage — Preemptive Cancellation
+
+Early on, if you spoke a second time before Kindy finished replying, **both requests would run simultaneously** — causing interleaved audio and corrupted text.
+
+The fix: every WebSocket connection gets its own **`AbortController` queue**:
+
+```js
+// New message arrives while old one is streaming
+oldAbortController.abort(); // cancel the old stream immediately
+processingPromise = handleNewRequest(newAbortController.signal);
+```
+
+New voice → old response cancelled instantly → fresh response starts. No waiting, no stale audio, no interleaving.
+
+---
+
+### 5. 👄 Audio-Driven Lip Synchronization
+
+Kindy's mouth doesn't just flap randomly. It uses the **Web Audio API** to calculate real-time RMS energy from the TTS audio buffer:
+
+```js
+// Vocal frequency band: 80Hz – 3kHz (where human speech lives)
+const rms = Math.sqrt(sum / binCount);
+const energy = Math.min(1, Math.max(0, (rms - 15) / 95)); // 0.0 → 1.0
+setMouthEnergy(energy); // drives SVG mouth path morphing via requestAnimationFrame
+```
+
+This produces **organic, naturally shaped mouth movement** synchronized frame-by-frame with Kindy's voice — not a loop or a timer.
+
+---
+
+### 6. 🃏 The 6-Card Interactive Action HUD
+
+When Kindy recommends opportunities, up to **6 contextual cards** appear spatially around the avatar (3 left, 3 right). Cards are:
+
+- **Generated dynamically by the LLM** (`[cards: [...]]` JSON directive stripped from TTS text)
+- **Cleared automatically** at the start of every new voice request so old suggestions never linger
+- **Animated** with a smooth slide-in from the dock when they appear
+- **Interactive** — click any card to ask Kindy more about that specific opportunity
+
+Kindy gestures toward them using `[wave_left]` / `[wave_right]` arm animations to draw your eye to the cards.
+
+---
+
+### 7. 🐳 One-Container, One-Command Deployment
+
+The React frontend and the Node.js backend live in a **single Docker container**:
+
+```dockerfile
+# Stage 1: Build Vite frontend
+FROM node:20-alpine AS builder
+RUN npm run build  # → /dist
+
+# Stage 2: Run Express server + serve static assets
+FROM node:20-alpine
+COPY --from=builder /dist ./public
+CMD ["node", "server/index.js"]
+```
+
+Deploy to Cloud Run with full WebSocket support in one command:
+```bash
+gcloud run deploy kindy-avatar-studio \
+  --source . --session-affinity --timeout 3600 \
+  --set-env-vars "GEMINI_API_KEY=..."
+```
+
+`--session-affinity` ensures WebSocket clients always stick to the same Cloud Run instance — critical for stateful streaming connections.
+
+---
+
 
 ```mermaid
 flowchart TB
