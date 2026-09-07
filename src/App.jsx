@@ -396,9 +396,14 @@ export default function App() {
     setMicNotice('');
 
     try {
-      // 1. Acquire microphone stream (reuse existing if still active)
+      // 1. Acquire microphone stream (reuse existing if still active and all tracks are live)
       let stream = mediaStreamRef.current;
-      if (!stream || !stream.active) {
+      const tracksAlive = stream && stream.getTracks().length > 0 && stream.getTracks().every((t) => t.readyState === 'live');
+      if (!stream || !stream.active || !tracksAlive) {
+        // Stop stale tracks to release old stream cleanly
+        if (stream) {
+          stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
+        }
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -457,6 +462,17 @@ export default function App() {
           };
           rec.onerror = (err) => {
             console.log('SpeechRecognition note:', err.error);
+            // Clear the ref so it can be re-initialized on next startListening call
+            if (err.error === 'aborted' || err.error === 'not-allowed' || err.error === 'service-not-allowed' || err.error === 'network') {
+              speechRecRef.current = null;
+            }
+          };
+          // CRITICAL: When the browser kills SpeechRecognition (e.g. tab switch, mic stolen by
+          // another tab), onend fires. Clear the ref so startListening() recreates it on return.
+          rec.onend = () => {
+            if (speechRecRef.current === rec) {
+              speechRecRef.current = null;
+            }
           };
           rec.start();
           speechRecRef.current = rec;
@@ -565,9 +581,9 @@ export default function App() {
           clearTimeout(silenceTimerRef.current);
         }
 
-        // Buffer time: wait 1900ms (base 900ms + 1000ms added buffer) of silence before cutting off and sending to LLM
+        // Buffer time: wait 2000ms (2 full seconds) of silence before cutting off and sending to LLM
         silenceTimerRef.current = setTimeout(() => {
-          console.log('[Hark VAD] Silence threshold reached (with 1s extra buffer: 1900ms) — finalizing and sending to LLM...');
+          console.log('[Hark VAD] Silence threshold reached (2s buffer) — finalizing and sending to LLM...');
           isRecordingSpeechRef.current = false;
           isUserSpeakingRef.current = false;
           setIsUserSpeaking(false);
@@ -578,7 +594,7 @@ export default function App() {
               mediaRecorderRef.current.stop();
             } catch (e) {}
           }
-        }, 1900); // 1.9s natural conversational pause with added 1 sec buffer
+        }, 2000); // 2s natural conversational pause buffer
       });
     } catch (err) {
       console.warn('Voice capture initialization error:', err);
@@ -654,9 +670,20 @@ export default function App() {
   useEffect(() => {
     const handleVisibility = () => {
       if (document.hidden) {
+        // Tab hidden: fully stop capture so all refs are reset cleanly
         stopVoiceCapture();
-      } else if (!isMutedRef.current && !isTalkingRef.current && !isGeminiLoadingRef.current) {
-        startListeningRef.current?.();
+      } else {
+        // Tab visible again: force-reset isListeningRef so startListening() doesn't skip itself
+        // (it may still be true if the browser killed things without firing our cleanup)
+        isListeningRef.current = false;
+        if (!isMutedRef.current && !isTalkingRef.current && !isGeminiLoadingRef.current) {
+          // Small delay so the browser fully restores mic permissions before we request the stream
+          setTimeout(() => {
+            if (!isMutedRef.current && !isListeningRef.current) {
+              startListeningRef.current?.();
+            }
+          }, 300);
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
@@ -1037,9 +1064,15 @@ export default function App() {
         }, 6000);
 
         // Auto-resume microphone listening immediately after Kindy finishes speaking
+        // IMPORTANT: Fully tear down stale hark VAD + SpeechRecognition + MediaRecorder
+        // before restarting, otherwise the old session blocks the new one from initializing.
         if (!isMutedRef.current && document.visibilityState !== 'hidden') {
-          isListeningRef.current = false;
-          startListeningRef.current?.();
+          stopVoiceCapture();  // clears hark, speechRec, mediaRecorder, resets all flags
+          setTimeout(() => {
+            if (!isMutedRef.current && !isListeningRef.current) {
+              startListeningRef.current?.();
+            }
+          }, 150); // tiny delay so stopVoiceCapture cleanup completes before re-init
         }
       };
 
@@ -1264,8 +1297,8 @@ export default function App() {
       isTalkingRef.current = false;
       setSpeechBubbleText(rawText.replace(/\[.*?\]/g, '').trim());
       if (!isMutedRef.current && document.visibilityState !== 'hidden') {
-        isListeningRef.current = false;
-        startListeningRef.current?.();
+        stopVoiceCapture();
+        setTimeout(() => { if (!isMutedRef.current && !isListeningRef.current) startListeningRef.current?.(); }, 150);
       }
     }
   };
