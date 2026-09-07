@@ -1809,7 +1809,8 @@ html, body {
   background: #fff1f2;
   border-color: #fecdd3;
   color: #e11d48;
-  animation: clear-btn-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: clear-btn-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+  overflow: hidden;
 }
 
 .dock-control-btn.clear-cards-dock-btn:hover {
@@ -1824,13 +1825,17 @@ html, body {
   color: #e11d48;
 }
 
-@keyframes clear-btn-pop {
+@keyframes clear-btn-slide-in {
   0% {
     opacity: 0;
+    max-width: 0;
+    padding-left: 0;
+    padding-right: 0;
     transform: scale(0.85);
   }
   100% {
     opacity: 1;
+    max-width: 160px;
     transform: scale(1);
   }
 }

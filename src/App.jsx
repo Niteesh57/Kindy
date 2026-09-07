@@ -1310,6 +1310,10 @@ export default function App() {
     setSpeechBubbleText('');
     setCurrentSpokenText('');
 
+    // Clear previous turn's cards so the dock button disappears immediately on new request
+    setActionCards([]);
+    setActiveCardId(null);
+
     // Stop recording speech if still in progress
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try { mediaRecorderRef.current.stop(); } catch (e) {}
