@@ -5,6 +5,7 @@
 # Kindy — The Generosity Companion 🎨✨
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Cloud%20Run-4285F4?logo=google-cloud&logoColor=white)](https://kindy-avatar-studio-619077244859.us-central1.run.app)
+[![YouTube Demo](https://img.shields.io/badge/YouTube-Video%20Demo-red?logo=youtube&logoColor=white)](https://youtu.be/jI_YRfRIlqo)
 [![Vite](https://img.shields.io/badge/Frontend-Vite%20%2B%20React%2018-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Node.js](https://img.shields.io/badge/Backend-Node.js%20%2B%20Express-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Gemini Flash](https://img.shields.io/badge/AI%20Model-Gemini%203.8%20Flash-FF6F00?logo=google&logoColor=white)](https://cloud.google.com/vertex-ai)
@@ -15,9 +16,12 @@
 
 ---
 
-## 🌟 Live Deployment
+## 🌟 Live Deployment & Demo Video
 
-👉 **[https://kindy-avatar-studio-619077244859.us-central1.run.app](https://kindy-avatar-studio-619077244859.us-central1.run.app)**
+- 🌐 **Live Web Application**: **[https://kindy-avatar-studio-619077244859.us-central1.run.app](https://kindy-avatar-studio-619077244859.us-central1.run.app)**
+- 🎬 **Video Walkthrough (YouTube)**: **[Watch the Demo Video](https://youtu.be/jI_YRfRIlqo)**
+
+[![Watch Kindy in Action](https://img.youtube.com/vi/jI_YRfRIlqo/maxresdefault.jpg)](https://youtu.be/jI_YRfRIlqo)
 
 ---
 
